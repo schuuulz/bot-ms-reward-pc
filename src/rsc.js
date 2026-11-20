@@ -69,6 +69,15 @@ function cards(rsc) {
   return [...byId.values()];
 }
 
+/**
+ * Dia do Rewards (AAAA-MM-DD), tirado da data do conjunto diario. O dia do Rewards nao vira a
+ * meia-noite local, entao isto e mais confiavel que o relogio para agrupar o historico.
+ */
+function rewardsDay(rsc) {
+  const m = rsc.match(/"date":"(\d{1,2})\/(\d{1,2})\/(\d{4})"/);
+  return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : undefined;
+}
+
 const counter = (c) => (c && Number.isFinite(c.max) ? { earned: c.progress ?? 0, max: c.max } : null);
 
 /** Soma de pontos pendentes de reivindicacao (estrutura exata desconhecida: procura numeros). */
@@ -89,6 +98,7 @@ export function parseRewards(html) {
   if (!balance) return null;
 
   const state = { balance: Number(balance[1]), cards: cards(rsc) };
+  state.day = rewardsDay(rsc);
 
   const counters = models(rsc, 'pointbreakdown')[0]?.pointsCounters;
   if (counters) {

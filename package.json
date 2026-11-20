@@ -1,13 +1,17 @@
 {
   "name": "bot-ms-reward-pc",
-  "version": "1.0.0",
-  "description": "Bot para completar as missoes diarias do Microsoft Rewards (buscas no Bing + cards do dashboard)",
+  "version": "2.0.0",
+  "description": "msr: CLI que faz as missoes diarias do Microsoft Rewards (buscas no Bing + cards do dashboard)",
   "type": "module",
   "private": true,
+  "bin": {
+    "msr": "bin/msr.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "start": "node src/index.js",
-    "status": "node src/index.js --status",
-    "queries": "node src/index.js --dry-run"
+    "test": "node --test"
   },
   "dependencies": {
     "playwright-core": "^1.50.0"

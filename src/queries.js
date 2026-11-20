@@ -1,5 +1,5 @@
 // Gerador de buscas. A ideia e parecer uma pessoa de verdade:
-//  - os assuntos mudam todo dia (tendencias do Google BR, mais lidos da Wikipedia, manchetes do G1);
+//  - os assuntos mudam todo dia (tendencias do Google BR e manchetes do G1);
 //  - o resto vem de "moldes" do dia a dia (receita de..., como fazer...) completados pelas
 //    sugestoes reais do Bing, ou seja, frases que as pessoas realmente digitam;
 //  - as buscas vem em "assuntos": 1 a 4 buscas encadeadas refinando o mesmo tema;
@@ -50,7 +50,7 @@ const rssTitles = (xml) =>
  * Transforma manchete em algo que uma pessoa digitaria: so o nome proprio principal
  * ("Pedro Sampaio fara show do intervalo na final da Libertadores" -> "Pedro Sampaio").
  */
-function headlineToPhrase(headline) {
+export function headlineToPhrase(headline) {
   const words = headline.replace(/["'“”‘’:;,|?!]/g, ' ').split(/\s+/).filter(Boolean);
   const isCap = (w) => /^[A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÀ-ÿ-]+$/.test(w);
   const isJoin = (w) => /^(de|da|do|das|dos|e)$/.test(w);
@@ -70,15 +70,6 @@ function headlineToPhrase(headline) {
 const SOURCES = {
   async trends() {
     return rssTitles(await getText('https://trends.google.com/trending/rss?geo=BR'));
-  },
-  async wikipedia() {
-    const d = new Date(Date.now() - 864e5);
-    const ymd = `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`;
-    const json = JSON.parse(await getText(`https://pt.wikipedia.org/api/rest_v1/feed/featured/${ymd}`));
-    return (json.mostread?.articles ?? [])
-      .map((a) => a.normalizedtitle)
-      .filter((t) => t && !t.includes(':') && !/^(Wikip|Página principal)/.test(t))
-      .slice(0, 30);
   },
   async g1() {
     return rssTitles(await getText('https://g1.globo.com/rss/g1/'))
@@ -107,11 +98,29 @@ const STEMS = [
 ];
 const LETTERS = 'aaaabbcccddeeefgghijlmmmnoppprrssstttuv';
 
-const BLOCKED = /(porn|xvideos|xnxx|sexo|nudes?\b|onlyfans|hentai|putaria|estupr|suic[ií]d|pedofil|acompanhantes)/i;
+// Assuntos que o bot nunca busca, venham de onde vierem (tendencias, manchetes ou sugestoes):
+// sexo, violencia, crime, drogas, apostas. A comparacao e sem acento. Uma lista de bloqueio nunca
+// e completa, entao as fontes tambem sao escolhidas para serem "seguras" (nada de mais-lidos).
+const BLOCKED = new RegExp(
+  [
+    // sexo
+    /porn|xvideos|xnxx|redtube|brazzers|onlyfans|hentai|sexo|sexual|sexy|nude|pelad[ao]|erotic|fetich/,
+    /filia\b|incest|pedofil|estupr|abus[oa]|assedi|prostitu|acompanhante|\bputa|gostosa|masturb|orgasm/,
+    /penis|vagina|\banal\b/,
+    // violencia e crime
+    /suicid|assassin|homicid|feminicid|chacina|massacre|tortur|decapit|esquartej|cadaver|mort[eo]s?\b/,
+    /morre|\bmat(ou|ar|aram)\b|tiroteio|atentado|terroris|nazi|hitler|holocaust|sequestr|trafic|\barmas?\b/,
+    // drogas e apostas
+    /cocaina|maconha|\bcrack\b|\bdrogas?\b|\bbets?\b|aposta|cassino|tigrinho|jogo do bicho/,
+  ]
+    .map((r) => r.source)
+    .join('|'),
+);
 
-const usable = (q) => q && q.length >= 3 && q.length <= 70 && !BLOCKED.test(q);
+const stripAccents = (s) => s.normalize('NFD').replace(/\p{M}/gu, '');
 
-const stripAccents = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
+export const usable = (q) =>
+  Boolean(q) && q.length >= 3 && q.length <= 70 && !BLOCKED.test(stripAccents(q.toLowerCase()));
 
 /** Do jeito que se digita na barra de busca: minusculas, as vezes sem acento. */
 function stylize(q) {

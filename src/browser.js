@@ -7,7 +7,8 @@ import { sleep } from './human.js';
 
 const endpoint = () => `http://127.0.0.1:${config.port}`;
 
-async function cdpAlive() {
+/** Ha um Edge do bot aberto (respondendo na porta de depuracao)? */
+export async function cdpAlive() {
   try {
     const r = await fetch(`${endpoint()}/json/version`, { signal: AbortSignal.timeout(1500) });
     return r.ok;
@@ -37,6 +38,19 @@ function headlessArgs(exe) {
   return ['--headless=new', `--user-agent=${ua}`, '--window-size=1366,900', `--screen-info={${config.headlessScreen}}`];
 }
 
+export const findEdge = () => config.edgePaths.find((p) => fs.existsSync(p));
+
+// O perfil do bot existe so para estar logado na conta: nada do Edge pessoal e sincronizado para
+// ele e nenhuma extensao carrega. Nenhuma destas flags e visivel para os sites.
+const PROFILE_ARGS = [
+  '--disable-sync',
+  '--disable-extensions',
+  '--disable-component-update', // nao baixa componentes que o bot nao usa (centenas de MB)
+  '--disk-cache-size=52428800', // cache HTTP limitado a 50 MB
+  '--no-first-run',
+  '--no-default-browser-check',
+];
+
 /**
  * Abre o Edge de verdade (processo normal, sem flags de automacao) com o perfil do bot
  * e conecta via CDP. Se ja houver um Edge do bot aberto na porta, so conecta nele.
@@ -44,16 +58,15 @@ function headlessArgs(exe) {
 export async function openBrowser({ headless = config.headless } = {}) {
   let spawned = false;
   if (!(await cdpAlive())) {
-    const exe = config.edgePaths.find((p) => fs.existsSync(p));
-    if (!exe) throw new Error('msedge.exe nao encontrado; ajuste edgePaths em src/config.js');
+    const exe = findEdge();
+    if (!exe) throw new Error('msedge.exe nao encontrado; ajuste edgePaths em data/config.json');
     fs.mkdirSync(config.profileDir, { recursive: true });
     spawn(
       exe,
       [
         `--remote-debugging-port=${config.port}`,
         `--user-data-dir=${config.profileDir}`,
-        '--no-first-run',
-        '--no-default-browser-check',
+        ...PROFILE_ARGS,
         ...(headless ? headlessArgs(exe) : []),
         'about:blank',
       ],

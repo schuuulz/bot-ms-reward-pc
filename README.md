@@ -1,84 +1,115 @@
-# Bot Microsoft Rewards (PC)
+# msr — bot do Microsoft Rewards (PC)
 
-Faz as missões diárias do Microsoft Rewards pelo site (`rewards.bing.com`), usando o Edge de
-verdade com um perfil só do bot.
+CLI que faz as missões diárias do Microsoft Rewards pelo site (`rewards.bing.com`), usando o Edge
+de verdade com um perfil só do bot.
 
-- **Cards**: conjunto diário (dashboard) e "Continuar ganhando" (aba Ganhar), incluindo os quizzes.
-- **Buscas no Bing**: lê o contador do dia (ex.: 39/60) e faz só as buscas que faltam.
-- **Reivindicar pontos**: os bônus do site novo ficam "pendentes" e expiram; `--claim` reivindica.
+- **Cards**: conjunto diário e "Continuar ganhando", incluindo os quizzes.
+- **Buscas no Bing**: lê o contador do dia (ex.: 39/60) e faz só as que faltam, espalhadas ao longo do dia.
+- **Reivindicar pontos**: os bônus do site novo ficam "pendentes" e expiram; `msr claim` reivindica.
 
 > Automatizar o Rewards é contra os termos de uso da Microsoft. O bot tenta se comportar como uma
 > pessoa, mas o risco de restrição ou banimento da conta existe e é seu.
 
-## Uso
+## Instalação
 
 ```
 npm install
-node src/index.js                    # confere o estado e faz o que estiver pendente (cards + buscas)
-node src/index.js --status           # saldo, contador de buscas e cards pendentes, sem abrir o navegador
-node src/index.js --show             # igual ao primeiro, mas com a janela do Edge visível
-node src/index.js --dry-run          # só imprime exemplos de buscas (não abre o navegador)
-node src/index.js --searches --max-searches 3
-node src/index.js --claim --preview  # mostra quanto há para reivindicar, sem clicar
-node src/index.js --claim            # reivindica os pontos pendentes
-node src/index.js --help
+npm link        # instala o comando global `msr`
+msr doctor      # confere Edge, sessão, perfil e agendamento
 ```
 
-Para rodar todo dia sozinho (horário varia a cada dia):
+Requer Node 22+ e Microsoft Edge. A única dependência é `playwright-core` (sem baixar navegador).
+
+## Uso
 
 ```
-powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1
-powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1 -Remove
+msr                      menu interativo
+msr run                  faz o que falta (cards + buscas)
+msr run --paced          só a fatia de buscas deste horário (é o que o agendador chama)
+msr status [--json]      saldo, buscas, conjunto diário, cards, pontos a reivindicar
+msr search [n]           só buscas; com n faz exatamente n (teste)
+msr cards                só os cards
+msr claim [--preview]    reivindica os pontos pendentes
+msr stats [--days N]     histórico de pontos por dia
+msr logs [--tail N]      log de hoje
+msr schedule [install|remove|status|test] [--times 09:30,14:30,20:30] [--jitter 90]
+msr login                abre o Edge do bot com janela para fazer login
+msr clean                apaga extensões, dados sincronizados e caches do perfil do bot
+msr doctor [--notify]    diagnóstico (com --notify, manda uma notificação de teste)
+msr queries              exemplos de buscas que seriam feitas
 ```
 
-O PC precisa estar ligado e com a sessão aberta. O bot usa mouse e teclado virtuais dentro do Edge
-dele (não mexe no seu mouse nem no seu Edge normal).
+Opções: `--show` (Edge com janela), `--no-http`, `--keep-open`, `--fast`, `--quiet`, `--notify`.
+Códigos de saída: `0` ok · `1` erro · `2` não logado · `3` Bing não creditou as buscas.
 
-## Sem janela e sem navegador
+## Como funciona
 
-- **Leitura por requisição**: o estado (saldo, contador de buscas, cards, pontos a reivindicar) vem
-  embutido no HTML de `rewards.bing.com/earn` e `/dashboard`. O bot baixa essas páginas direto com
-  os cookies salvos em `data/session.json` (exportados do Edge no fim de cada execução). Assim
-  `--status` responde em ~1 s, e a execução normal só abre o navegador se houver algo pendente.
-  Se a sessão salva expirar, ele cai automaticamente para o navegador e renova os cookies.
-- **Headless**: quando precisa do navegador, o Edge abre sem janela (`headless: true` no config).
-  O headless "cru" se identifica (`HeadlessChrome` no user-agent, tela 800x600); o bot passa
-  `--user-agent` e `--screen-info` para ficar igual ao Edge normal. `--show` abre com janela.
-- **Só leitura por requisição**: clicar nos cards e buscar no Bing continua sendo feito pelo
-  navegador de verdade. Fazer isso por requisição direta é exatamente o padrão que denuncia robô.
-- `data/session.json` contém os cookies de login da sua conta: não compartilhe essa pasta.
-- Para desligar: `httpStatus: false` / `headless: false` em `src/config.js`, ou `--no-http` / `--show`.
+**Sem processo residente.** Nada fica rodando em segundo plano. `msr schedule install` cria uma
+tarefa no Agendador do Windows com três gatilhos diários, cada um com atraso aleatório. Cada disparo
+lê o estado por requisição (~1 s) e só abre o Edge se houver trabalho.
 
-## Login
+**Leitura por requisição.** Saldo, contador, cards e pontos a reivindicar vêm embutidos no HTML de
+`/earn` e `/dashboard` (payload do Next.js). O bot baixa essas páginas com os cookies exportados do
+Edge em `data/session.json`. Se a sessão expirar, cai sozinho para o navegador e renova. Clicar nos
+cards e buscar no Bing é sempre feito pelo navegador de verdade.
 
-O perfil do bot fica em `.edge-profile/`. Na primeira abertura o Edge entra sozinho na conta
-Microsoft do Windows. Se o bot avisar que não está logado, abra com janela e faça login uma vez:
+**Edge sem janela.** O headless "cru" se identifica (`HeadlessChrome` no user-agent, tela 800x600);
+o bot passa `--user-agent` e `--screen-info` para ficar igual ao Edge normal. O Edge é um processo
+comum controlado por CDP, sem flags de automação (`navigator.webdriver` continua `false`).
 
-```
-node src/index.js --status --no-http --show --keep-open
-```
+**Perfil só para login.** O perfil em `.edge-profile/` existe apenas para manter a conta logada.
+Abre sempre com `--disable-sync` e `--disable-extensions`: nada do seu Edge pessoal (extensões,
+favoritos, senhas, histórico) é sincronizado para ele. Fica na faixa de 50–70 MB; `msr clean`
+remove qualquer resto e os caches, sem perder o login.
+
+**Ritmo do dia (`--paced`).** A meta de buscas cresce de 0% às 8h até 100% às 20h. Cada execução
+faz `meta do horário − já feito`, com variação aleatória e mínimo de 3 buscas; depois das 20h faz
+tudo o que falta. Se o PC estava desligado, a execução seguinte compensa.
+
+**Aviso de falha.** Execuções agendadas mandam uma notificação do Windows se a conta deslogar, se
+o Bing parar de creditar as buscas, se o formato do site mudar ou se der erro.
 
 ## Como as buscas evitam parecer robô
 
-- **Nunca repete**: toda busca feita vai para `data/history.json` e não é usada de novo por 180 dias.
-- **Assuntos mudam todo dia**: tendências do Google no Brasil, artigos mais lidos da Wikipédia e
-  manchetes do G1, misturados com buscas do dia a dia ("receita de…", "como fazer…") completadas
-  pelas sugestões reais do Bing. Os "moldes" usados recentemente também não se repetem.
+- **Nunca repete**: toda busca vai para `data/history.json` e não é usada de novo por 180 dias.
+- **Assuntos mudam todo dia**: tendências do Google no Brasil e manchetes do G1, misturados com
+  buscas do dia a dia ("receita de…", "como fazer…") completadas pelas sugestões reais do Bing.
 - **Buscas encadeadas**: 1 a 4 buscas sobre o mesmo assunto, refinando, como uma pessoa faz.
-- **Interação real**: digita na caixa do Bing letra por letra (com erros corrigidos), às vezes
-  clica numa sugestão, rola a página, abre um resultado, clica em "pesquisas relacionadas".
-- **Ritmo irregular**: intervalos de ~10 s a 4 min entre buscas, pausas longas entre assuntos.
-- **Navegador normal**: o Edge é aberto como processo comum (sem flags de automação) e controlado
-  por CDP; `navigator.webdriver` continua `false`, com ou sem janela.
-- **Cooldown**: se o contador para de subir, espera ~15 min antes de continuar.
+- **Interação real**: digita letra por letra (com erros corrigidos), às vezes clica numa sugestão,
+  rola a página, abre um resultado, clica em "pesquisas relacionadas".
+- **Ritmo irregular**: 10 s a 4 min entre buscas, pausas longas entre assuntos, sessões em horários
+  diferentes a cada dia.
+- **Lista de bloqueio**: termos de sexo, violência, crime, drogas e apostas nunca são buscados,
+  venham das fontes, das sugestões ou das pesquisas relacionadas (`src/queries.js`).
 
-Ajustes em `src/config.js`.
+## Arquivos
+
+```
+bin/msr.js        entrada do comando
+src/cli.js        argumentos, ajuda, códigos de saída      src/commands.js   comandos
+src/run.js        orquestração de uma execução              src/menu.js       menu interativo
+src/rsc.js        leitor do estado embutido no HTML         src/http.js       leitura por requisição
+src/rewards.js    páginas do Rewards no navegador           src/activities.js cards e quizzes
+src/searches.js   sessão de buscas                          src/queries.js    gerador de buscas
+src/pacing.js     ritmo do dia                              src/schedule.js   Agendador de Tarefas
+src/browser.js    Edge + CDP                                src/profile.js    tamanho/limpeza do perfil
+src/stats.js      histórico diário                          src/notify.js     notificação do Windows
+test/             node:test (npm test)
+```
+
+Dados locais, fora do git: `.edge-profile/` (login) e `data/` (`session.json` com os cookies da
+conta, `history.json`, `days.json`, `logs/` dos últimos 30 dias). Não compartilhe essas pastas.
+
+Ajustes pessoais vão em `data/config.json` e sobrepõem os padrões de `src/config.js`, por exemplo:
+
+```json
+{ "autoClaim": true, "pacing": { "startHour": 9, "finishHour": 22 } }
+```
 
 ## O que o bot não faz
 
-- **Busca mobile**: nesta conta o site mostra um contador único de busca (não há pontos separados
-  de PC e celular), então emular celular não rende nada a mais.
-- **Check-in do app Bing/Rewards e "Buscas" (quests)**: dependem do app de celular, do app desktop
-  ou de compras.
-- **Cards que exigem ação real** (ex.: criar imagem no Image Creator): o bot clica e visita, mas
-  se o card continuar pendente ele só registra no log.
+- **Busca mobile**: nesta conta o site mostra um contador único de busca, então emular celular não
+  rende nada a mais. Se a conta passar a ter contador separado, `msr status` mostra.
+- **Check-in do app Bing/Rewards e "Buscas" (quests)**: dependem do app de celular ou de compras.
+- **Cards que exigem ação real** (ex.: criar imagem no Image Creator): depois de duas tentativas
+  sem crédito, o bot deixa o card de lado por 30 dias.

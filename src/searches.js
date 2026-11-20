@@ -4,7 +4,7 @@
 
 import { config } from './config.js';
 import { chance, humanClick, humanScroll, humanType, logNormal, pause, pick, randInt, sleep } from './human.js';
-import { QueryPlanner } from './queries.js';
+import { QueryPlanner, usable } from './queries.js';
 import { dismissCookieBanner, readSearchProgress } from './rewards.js';
 
 const S = config.search;
@@ -34,7 +34,7 @@ async function typedSearch(page, query, history) {
     for (let i = 0; i < n; i++) {
       const item = items.nth(i);
       const text = ((await item.getAttribute('query')) ?? (await item.innerText())).split('\n')[0].trim();
-      if (!text || history.has(text) || !chance(0.6)) continue;
+      if (!usable(text) || history.has(text) || !chance(0.6)) continue;
       await humanClick(page, item);
       await waitForResults(page, before);
       return text;
@@ -56,7 +56,7 @@ async function relatedSearch(page, history) {
   const candidates = [];
   for (let i = 0; i < Math.min(n, 8); i++) {
     const text = (await links.nth(i).innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
-    if (text && text.length <= 70 && !history.has(text)) candidates.push({ i, text });
+    if (usable(text) && !history.has(text)) candidates.push({ i, text });
   }
   if (!candidates.length) return null;
   const { i, text } = pick(candidates);
@@ -110,19 +110,27 @@ async function checkProgress(context, page) {
   }
 }
 
-export async function runSearches({ context, page, history, log, maxSearches }) {
+/**
+ * Faz as buscas que faltam para fechar o contador do dia.
+ *  - limit: teto de buscas desta sessao (ritmo do dia ou teste);
+ *  - force: faz exatamente `limit` buscas mesmo com o contador completo (so para testar).
+ * Retorna { done, progress, stalled }; stalled = o Bing nao creditou as buscas.
+ */
+export async function runSearches({ context, page, history, log, limit, force = false }) {
   let progress = await readSearchProgress(page);
   if (progress) log(`pontos de busca hoje: ${progress.earned}/${progress.max}`);
   else log('nao consegui ler o contador de buscas; usando quantidade padrao');
-  if (progress && progress.earned >= progress.max && maxSearches == null) {
+  if (progress && progress.earned >= progress.max && !force) {
     log('buscas de hoje ja estao completas');
-    return { done: 0, progress };
+    return { done: 0, progress, stalled: false };
   }
 
   let pps = S.pointsPerSearch;
   const needed = (p) => Math.ceil((p.max - p.earned) / pps);
-  let budget = maxSearches ?? (progress ? needed(progress) : S.fallbackCount);
-  const hardCap = maxSearches ?? budget * 2 + 6;
+  let budget = progress ? needed(progress) : S.fallbackCount;
+  if (limit != null) budget = force ? limit : Math.min(budget, limit);
+  const hardCap = limit ?? budget * 2 + 6;
+  const first = progress;
   log(`plano: ~${budget} buscas`);
 
   const planner = new QueryPlanner(history, log);
@@ -171,17 +179,18 @@ export async function runSearches({ context, page, history, log, maxSearches }) 
           if (gained > 0) pps = Math.max(1, Math.round(gained / sinceCheck));
           if (now.earned >= now.max) {
             finishing = true;
-            budget = maxSearches ?? (chance(S.extraChance) ? done + randInt(1, 2) : done);
-          } else if (progress && gained <= 0 && sinceCheck >= 3) {
+            if (!force) budget = limit == null && chance(S.extraChance) ? done + randInt(1, 2) : done;
+          } else if (progress && gained <= 0 && sinceCheck >= 3 && limit == null) {
+            // Sessao sem teto: espera o cooldown do Bing passar e continua.
             if (cooldowns >= S.maxCooldowns) {
               log('o Bing nao esta creditando pontos; parando por hoje');
-              return { done, progress: now };
+              return { done, progress: now, stalled: true };
             }
             cooldowns++;
             const minutes = randInt(...S.cooldownMin);
             log(`sem pontos nas ultimas ${sinceCheck} buscas; pausa de ${minutes} min (cooldown do Bing)`);
             await sleep(minutes * 60000);
-          } else if (!maxSearches) {
+          } else if (limit == null) {
             budget = Math.min(hardCap, done + needed(now));
           }
           progress = now;
@@ -202,5 +211,7 @@ export async function runSearches({ context, page, history, log, maxSearches }) 
   }
 
   if (!finishing) progress = (await checkProgress(context, page)) ?? progress;
-  return { done, progress };
+  // Sessao com teto: nao espera cooldown; so avisa se nenhuma busca rendeu ponto.
+  const gainedNothing = first && progress && progress.earned <= first.earned && first.earned < first.max;
+  return { done, progress, stalled: Boolean(gainedNothing && done >= 3) };
 }

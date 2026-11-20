@@ -19,7 +19,7 @@ export async function gotoRewards(page, url) {
   } catch {
     if (!/rewards\.bing\.com\/(dashboard|earn)/.test(page.url())) {
       throw new NotLoggedInError(
-        `O Rewards redirecionou para ${page.url()}. Rode com --show --keep-open e faca login na conta Microsoft na janela do Edge do bot.`,
+        `o Rewards redirecionou para ${page.url()}; a conta nao esta logada no Edge do bot (msr login)`,
       );
     }
     throw new Error('O dashboard do Rewards nao carregou');

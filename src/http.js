@@ -31,7 +31,7 @@ export async function exportSession(context, page) {
   saveSession({ savedAt: new Date().toISOString(), userAgent, cookies });
 }
 
-function cookieHeader(session, url) {
+export function cookieHeader(session, url) {
   const { hostname, pathname } = new URL(url);
   const now = Date.now() / 1000;
   return session.cookies
@@ -45,7 +45,7 @@ function cookieHeader(session, url) {
 }
 
 /** Aplica os Set-Cookie da resposta no jar (o site renova cookies de sessao curtos). */
-function storeCookies(session, url, setCookies) {
+export function storeCookies(session, url, setCookies) {
   const host = new URL(url).hostname;
   for (const line of setCookies) {
     const [pair, ...attrs] = line.split(';').map((s) => s.trim());
@@ -95,29 +95,36 @@ async function get(session, startUrl) {
     storeCookies(session, url, res.headers.getSetCookie());
     if (res.status >= 300 && res.status < 400) {
       const next = new URL(res.headers.get('location') ?? '', url);
-      if (!/(^|\.)bing\.com$/.test(next.hostname)) return null; // mandou para o login: sessao expirou
+      if (!/(^|\.)bing\.com$/.test(next.hostname)) throw new Error('sessao expirada (o site pediu login)');
       url = next.href;
       continue;
     }
-    return res.ok ? res.text() : null;
+    if (!res.ok) throw new Error(`o site respondeu HTTP ${res.status}`);
+    return res.text();
   }
-  return null;
+  throw new Error('redirecionamentos demais');
 }
+
+/** Por que a ultima leitura por requisicao falhou (para o `msr doctor`); null se deu certo. */
+export let httpIssue = null;
 
 /**
  * Estado completo (saldo, buscas, cards, pontos a reivindicar) via HTTP.
- * Retorna null se nao houver sessao salva ou se ela expirou; ai o chamador usa o navegador.
+ * Retorna null se nao der (sem sessao salva, sessao expirada, site fora); ai o chamador usa o
+ * navegador, que tambem renova a sessao.
  */
 export async function fetchState() {
-  const session = loadSession();
-  if (!session) return null;
+  httpIssue = null;
   try {
-    const earn = parseRewards((await get(session, 'https://rewards.bing.com/earn')) ?? '');
-    if (!earn) return null;
-    const dashboard = parseRewards((await get(session, 'https://rewards.bing.com/dashboard')) ?? '');
+    const session = loadSession();
+    if (!session) throw new Error('ainda nao ha sessao salva');
+    const earn = parseRewards(await get(session, 'https://rewards.bing.com/earn'));
+    if (!earn) throw new Error('a pagina veio sem os dados da conta');
+    const dashboard = parseRewards(await get(session, 'https://rewards.bing.com/dashboard'));
     saveSession(session);
     return { ...earn, claimable: dashboard?.claimable };
-  } catch {
+  } catch (err) {
+    httpIssue = err.message;
     return null;
   }
 }
