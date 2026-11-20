@@ -1,0 +1,4 @@
+node_modules/
+.edge-profile/
+data/
+.claude/settings.local.json
