@@ -7,6 +7,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { pendingCards } from '../src/activities.js';
+import { userAgentFor } from '../src/browser.js';
 import { History, normalize } from '../src/history.js';
 import { cookieHeader, storeCookies } from '../src/http.js';
 import { move, select } from '../src/menu.js';
@@ -101,6 +102,15 @@ test('cookies: dominio, caminho e validade', () => {
   ] };
   assert.equal(cookieHeader(session, 'https://rewards.bing.com/earn'), 'a=1; b=2');
   assert.equal(cookieHeader(session, 'https://www.bing.com/account/x'), 'a=1; c=3; e=5');
+});
+
+test('navegador: o user-agent leva a versao principal do Edge que sera aberto', () => {
+  assert.equal(
+    userAgentFor('157.0.4341.60'),
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0',
+  );
+  assert.equal(userAgentFor(''), null);
+  assert.equal(userAgentFor('lixo'), null);
 });
 
 test('cookies: cookie Secure nunca sai numa URL sem https', () => {

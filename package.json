@@ -1,6 +1,6 @@
 {
   "name": "bot-ms-reward-pc",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "msr: CLI que faz as missoes diarias do Microsoft Rewards (buscas no Bing + cards do dashboard)",
   "type": "module",
   "private": true,

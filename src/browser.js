@@ -4,6 +4,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { config } from './config.js';
 import { sleep } from './human.js';
+import { powershell } from './win.js';
 
 const endpoint = () => `http://127.0.0.1:${config.port}`;
 
@@ -17,23 +18,34 @@ export async function cdpAlive() {
   }
 }
 
-/** User-agent que o Edge instalado usa em modo normal (a versao vem da pasta de instalacao). */
-function normalUserAgent(exe) {
-  const majors = fs
-    .readdirSync(path.dirname(exe))
-    .map((d) => Number((d.match(/^(\d+)\.\d+\.\d+\.\d+$/) ?? [])[1]))
-    .filter(Boolean);
-  if (!majors.length) return null;
-  const v = Math.max(...majors);
-  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v}.0.0.0 Safari/537.36 Edg/${v}.0.0.0`;
+/** User-agent que o Edge de uma versao ("157.0.4341.60") usa em modo normal; null se ilegivel. */
+export function userAgentFor(version) {
+  const major = Number((String(version).match(/^(\d+)\./) ?? [])[1]);
+  if (!major) return null;
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36 Edg/${major}.0.0.0`;
+}
+
+/**
+ * Versao do msedge.exe que vai ser aberto, lida do proprio arquivo. A pasta de instalacao nao
+ * serve de fonte: com uma atualizacao do Edge pendente ela ja tem a pasta da versao seguinte, e o
+ * bot anunciaria uma versao diferente da que o navegador informa nos outros cabecalhos.
+ */
+async function edgeVersion(exe) {
+  try {
+    return await powershell('(Get-Item -LiteralPath $env:MSR_EXE).VersionInfo.ProductVersion', { env: { MSR_EXE: exe }, timeout: 15000 });
+  } catch {
+    // Sem PowerShell: a maior pasta de versao e o melhor palpite (certo quando nao ha atualizacao pendente).
+    const versions = fs.readdirSync(path.dirname(exe)).filter((d) => /^\d+\.\d+\.\d+\.\d+$/.test(d));
+    return versions.sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10)).at(-1) ?? '';
+  }
 }
 
 /**
  * Sem janela. O headless "cru" se entrega: o user-agent vira "HeadlessChrome/..." e a tela
  * aparece como 800x600. Estas flags devolvem o user-agent normal e uma tela de verdade.
  */
-function headlessArgs(exe) {
-  const ua = normalUserAgent(exe);
+async function headlessArgs(exe) {
+  const ua = userAgentFor(await edgeVersion(exe));
   if (!ua) throw new Error('nao consegui descobrir a versao do Edge para o modo headless; rode com --show');
   return ['--headless=new', `--user-agent=${ua}`, '--window-size=1366,900', `--screen-info={${config.headlessScreen}}`];
 }
@@ -67,7 +79,7 @@ export async function openBrowser({ headless = config.headless } = {}) {
         `--remote-debugging-port=${config.port}`,
         `--user-data-dir=${config.profileDir}`,
         ...PROFILE_ARGS,
-        ...(headless ? headlessArgs(exe) : []),
+        ...(headless ? await headlessArgs(exe) : []),
         'about:blank',
       ],
       { detached: true, stdio: 'ignore' },
