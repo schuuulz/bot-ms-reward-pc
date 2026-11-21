@@ -8,6 +8,7 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { pendingCards } from '../src/activities.js';
 import { userAgentFor } from '../src/browser.js';
+import { outsideHome } from '../src/commands.js';
 import { History, normalize } from '../src/history.js';
 import { cookieHeader, storeCookies } from '../src/http.js';
 import { move, select } from '../src/menu.js';
@@ -102,6 +103,22 @@ test('cookies: dominio, caminho e validade', () => {
   ] };
   assert.equal(cookieHeader(session, 'https://rewards.bing.com/earn'), 'a=1; b=2');
   assert.equal(cookieHeader(session, 'https://www.bing.com/account/x'), 'a=1; c=3; e=5');
+});
+
+test('buscas: texto com caractere de controle nunca e usado', () => {
+  assert.equal(usable('receita de bolo'), true);
+  assert.equal(usable('receita\x1b[2J de bolo'), false);
+  assert.equal(usable('titulo\x07 qualquer'), false);
+  assert.equal(usable('duas\nlinhas aqui'), false);
+});
+
+test('instalacao: reconhece quando o msr esta fora da pasta do usuario', () => {
+  const home = path.join(os.homedir());
+  assert.equal(outsideHome(path.join(home, 'msr'), home), false);
+  assert.equal(outsideHome(path.join(home, 'Downloads', 'bot'), home), false);
+  assert.equal(outsideHome(path.dirname(home), home), true); // a pasta de todos os usuarios
+  assert.equal(outsideHome(path.join(path.parse(home).root, 'msr'), home), true); // C:\msr
+  assert.equal(outsideHome(`${home}-outro`, home), true); // so o comeco do nome coincide
 });
 
 test('navegador: o user-agent leva a versao principal do Edge que sera aberto', () => {

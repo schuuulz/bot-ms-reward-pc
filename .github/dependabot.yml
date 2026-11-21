@@ -1,0 +1,13 @@
+# As actions do workflow sao fixadas por hash de commit e o playwright-core pelo package-lock:
+# sem isto, nenhum dos dois receberia correcoes de seguranca. O Dependabot abre um PR por semana
+# quando ha versao nova; os testes rodam no PR.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly

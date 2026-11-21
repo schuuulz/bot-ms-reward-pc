@@ -128,6 +128,16 @@ export function logStore() {
   return store;
 }
 
+/**
+ * As mensagens levam texto que vem de fora (buscas, titulos de cards, erros de sites). Caracteres
+ * de controle saem antes de ir para o banco e para a tela: uma sequencia de escape num titulo nao
+ * pode mexer no terminal de quem roda o msr. Erros mantem quebra de linha e tab (a pilha).
+ */
+export function cleanMessage(message, { keepLines = false } = {}) {
+  const text = String(message);
+  return keepLines ? text.replace(/[^\P{Cc}\n\t]/gu, '') : text.replace(/\p{Cc}+/gu, ' ');
+}
+
 let warned = false;
 
 /** Grava sem derrubar a execucao se o banco estiver inacessivel (avisa uma vez). */
@@ -140,7 +150,7 @@ function write(message, level) {
   }
 }
 
-export const logError = (message) => write(message, 'error');
+export const logError = (message) => write(cleanMessage(message, { keepLines: true }), 'error');
 
 /** Logger das execucoes: grava no banco e (se nao --quiet) mostra hora + mensagem na tela. */
 export function createLogger({ quiet = false } = {}) {
@@ -150,7 +160,8 @@ export function createLogger({ quiet = false } = {}) {
     /* o aviso sai na primeira gravacao */
   }
   return (message) => {
-    write(message, 'info');
-    if (!quiet) console.log(`${paint('dim', new Date().toLocaleTimeString('pt-BR'))}  ${message}`);
+    const text = cleanMessage(message);
+    write(text, 'info');
+    if (!quiet) console.log(`${paint('dim', new Date().toLocaleTimeString('pt-BR'))}  ${text}`);
   };
 }

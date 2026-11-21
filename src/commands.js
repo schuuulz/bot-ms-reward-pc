@@ -2,6 +2,7 @@
 // Assinatura: (args posicionais, opcoes, log) -> codigo de saida (ou nada = 0).
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pendingCards, setAsideCards } from './activities.js';
 import { cdpAlive, findEdge } from './browser.js';
@@ -26,6 +27,23 @@ export const EXIT = { ok: 0, error: 1, notLoggedIn: 2, notCredited: 3 };
 const mb = (bytes) => `${(bytes / 1048576).toFixed(0)} MB`;
 const ok = (text) => `  ${paint('green', '✓')} ${text}`;
 const warn = (text) => `  ${paint('yellow', '!')} ${text}`;
+
+/**
+ * O caminho esta fora da pasta do usuario? La fora (ex.: uma pasta criada em C:\) o Windows
+ * costuma deixar qualquer conta do PC alterar os arquivos: outra pessoa poderia trocar o msr, e o
+ * agendamento rodaria o arquivo dela na conta de quem agendou.
+ */
+export function outsideHome(target, home = os.homedir()) {
+  const relative = path.relative(home, target);
+  return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+}
+
+/** Aviso se o msr (o exe, ou a pasta do checkout) esta num lugar que outras contas alcancam. */
+function unsafePlaceWarning() {
+  const place = config.packaged ? path.dirname(process.execPath) : config.root;
+  if (!outsideHome(place)) return null;
+  return `o msr esta em ${place}, fora da sua pasta de usuario: outras contas deste PC podem conseguir troca-lo. Mova para uma pasta dentro de ${os.homedir()} e ative o agendamento de novo`;
+}
 
 /**
  * O que fazer quando a conta nao esta logada. O Edge do bot entra sozinho na conta Microsoft em
@@ -207,6 +225,7 @@ async function schedule([action = 'status'], opts) {
   if (action === 'install') {
     const times = opts.times?.split(',').map((t) => t.trim());
     printSchedule(await installSchedule({ times, jitterMinutes: opts.jitter }));
+    if (unsafePlaceWarning()) console.log(warn(unsafePlaceWarning()));
   } else if (action === 'remove') {
     await removeSchedule();
     console.log('  agendamento removido');
@@ -249,7 +268,7 @@ const versionLabel = () => `msr v${currentVersion()}${config.packaged ? '' : ' (
  * foi trocado: dali em diante e preciso abrir o msr de novo.
  */
 async function update(_args, opts) {
-  const news = await checkUpdate({ force: true });
+  const news = await checkUpdate();
   if (!news) throw new Error('nao consegui consultar as versoes no GitHub (sem internet?)');
   if (!news.available) return void console.log(ok(`${versionLabel()} ja e a versao mais recente`));
   console.log(`  ${versionLabel()} -> nova versao v${news.latest.version} disponivel`);
@@ -265,6 +284,7 @@ async function doctor(_args, opts) {
   const news = await checkUpdate();
   if (news?.available) console.log(warn(`nova versao v${news.latest.version} disponivel (msr update, ou "Quero Atualizar" no menu)`));
   else console.log(news ? ok('esta e a versao mais recente') : warn('nao consegui consultar se ha versao nova'));
+  if (unsafePlaceWarning()) console.log(warn(unsafePlaceWarning()));
   const edge = findEdge();
   console.log(edge ? ok(`Edge em ${edge}`) : warn('msedge.exe nao encontrado (ajuste edgePaths em data/config.json)'));
 
@@ -314,7 +334,7 @@ async function menu(_args, opts, log) {
     ['Diagnóstico', () => doctor([], opts)],
     ['Verificar conta', () => checkAccount(opts)],
   ];
-  // Ao abrir: ve se ha versao nova (no maximo uma consulta a cada 12 h) e, sem sessao (primeira
+  // Ao abrir: ve se ha versao nova (uma consulta ao GitHub) e, sem sessao (primeira
   // vez ou sessao expirada), confere a conta antes do menu.
   const [news, logged] = await Promise.all([checkUpdate(), fetchState()]);
   if (!logged) await checkAccount(opts);

@@ -18,9 +18,10 @@ importa e não é alterado.
 1. **Conta**: o Windows precisa estar logado com a sua conta Microsoft (Configurações > Contas >
    Suas informações). O bot usa essa conta sozinho; o msr nunca pede login nem senha.
 2. Baixe o `msr.zip` da [última versão](https://github.com/schuuulz/bot-ms-reward-pc/releases/latest),
-   descompacte o `msr.exe` numa pasta fixa (ex.: `C:\msr`) e abra com dois cliques. O arquivo não
-   tem assinatura digital, então o Windows avisa na primeira vez: "Mais informações" > "Executar
-   assim mesmo".
+   descompacte o `msr.exe` numa pasta fixa **dentro da sua pasta de usuário** (ex.:
+   `C:\Users\<você>\msr`) e abra com dois cliques. Evite pastas na raiz do disco, como `C:\msr`:
+   ali outras contas do PC conseguem alterar arquivos. O exe não tem assinatura digital, então o
+   Windows avisa na primeira vez: "Mais informações" > "Executar assim mesmo".
 3. Ao abrir, o msr confere a conta e mostra o saldo. Veja se é a conta certa.
 4. No menu, **Agendamento > Ativar** para rodar sozinho todo dia. Se mover o `msr.exe` depois,
    ative de novo (o Diagnóstico avisa).
@@ -34,9 +35,9 @@ apague o exe e essa pasta.
 
 ### Atualizar
 
-O menu mostra a versão em uso (`msr v2.1.0`). Ao abrir, o msr consulta a última versão publicada
-no GitHub, no máximo uma vez a cada 12 horas. Havendo versão nova, aparece o aviso e a opção
-**Quero Atualizar** no menu. Nada é atualizado sem você escolher.
+O menu mostra a versão em uso (`msr v2.1.2`). Toda vez que é aberto, o msr consulta a última
+versão publicada no GitHub. Havendo versão nova, aparece o aviso e a opção **Quero Atualizar** no
+menu. Nada é atualizado sem você escolher, e as execuções agendadas não consultam nada.
 
 Ao atualizar, o msr baixa o binário da release, confere o SHA-256 com o que o GitHub informa para
 o arquivo, testa o exe novo e só então troca o atual. Login, dados e agendamento continuam como
@@ -130,8 +131,17 @@ o Bing parar de creditar as buscas, se o formato do site mudar ou se der erro.
   porta de depuração, ele recusa em vez de agir no navegador errado.
 - **Cards**: só clica em cards que levam ao `bing.com`; nada de resgate, compra ou download.
 - **Atualização**: só baixa do repositório oficial, por https, e confere o SHA-256 antes de
-  trocar o exe. Isso garante que o arquivo é o publicado aqui; não substitui uma assinatura
-  digital, que o exe não tem (por isso o aviso do SmartScreen).
+  trocar o exe. As releases são imutáveis: depois de publicadas, os arquivos não podem ser
+  trocados. Isso garante que o arquivo é o publicado aqui; não substitui uma assinatura digital,
+  que o exe não tem (por isso o aviso do SmartScreen).
+- **Onde instalar**: dentro da sua pasta de usuário. Fora dela, outra conta do PC pode conseguir
+  trocar o `msr.exe`, e o agendamento rodaria o arquivo dela na sua conta. O Diagnóstico avisa.
+- **PC compartilhado**: enquanto o bot roda, o Edge dele aceita controle por uma porta local
+  (`127.0.0.1:9222`) sem senha. Sites não alcançam essa porta, mas qualquer programa do próprio
+  PC, inclusive de outra conta do Windows, alcança e controla o navegador logado. Não use o msr
+  num PC dividido com pessoas em quem você não confia.
+- **Texto de fora**: buscas e títulos vindos de sites têm os caracteres de controle removidos
+  antes de irem para o terminal e para o log.
 - **O que fica no seu PC**: o perfil do Edge do bot (login), a sessão, o histórico de buscas e os
   logs. Nada é enviado a ninguém além da Microsoft (o próprio uso do Rewards) e das consultas de
   versão ao GitHub.

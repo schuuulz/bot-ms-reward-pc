@@ -5,7 +5,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { LogStore, formatLine, parseLegacyLog } from '../src/logs.js';
+import { LogStore, cleanMessage, formatLine, parseLegacyLog } from '../src/logs.js';
+
+test('logs: caracteres de controle vindos de fora nao chegam ao terminal nem ao banco', () => {
+  assert.equal(cleanMessage('busca 1/2: titulo\x1b]0;invadido\x07 normal'), 'busca 1/2: titulo ]0;invadido  normal');
+  assert.equal(cleanMessage('linha\r\n[12:00:00] linha falsa'), 'linha [12:00:00] linha falsa');
+  assert.equal(cleanMessage('Error: falhou\n\tat x.js:1:1\x1b[2J', { keepLines: true }), 'Error: falhou\n\tat x.js:1:1[2J');
+  assert.equal(cleanMessage('ação, coração ✓'), 'ação, coração ✓'); // acentos e simbolos ficam
+});
 
 /** Roda fn com um banco numa pasta temporaria e limpa no fim. */
 function withStore(fn) {

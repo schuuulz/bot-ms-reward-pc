@@ -1,8 +1,8 @@
-// Atualizacao (versoes, leitura da release, validade do cache) e protecao DPAPI do Windows.
+// Atualizacao (versoes, leitura da release, reserva guardada) e protecao DPAPI do Windows.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { REPO, cacheFresh, isNewer, parseRelease } from '../src/update.js';
+import { REPO, cacheUsable, isNewer, parseRelease } from '../src/update.js';
 import { protect, unprotect } from '../src/win.js';
 
 test('versoes: compara numero a numero, com ou sem "v"', () => {
@@ -37,13 +37,11 @@ test('release: aceita so o binario do proprio repositorio, com hash valido', () 
   assert.equal(parseRelease(null), null);
 });
 
-test('cache: vale por 12 h e so para a versao em uso', () => {
-  const now = Date.now();
-  const cache = { checkedAt: now - 3600e3, current: '2.1.0', latest: null };
-  assert.equal(cacheFresh(cache, '2.1.0', now), true);
-  assert.equal(cacheFresh(cache, '2.2.0', now), false); // o msr foi atualizado: consulta de novo
-  assert.equal(cacheFresh({ ...cache, checkedAt: now - 13 * 3600e3 }, '2.1.0', now), false);
-  assert.equal(cacheFresh(null, '2.1.0', now), false);
+test('cache: so serve de reserva se foi gravado pela versao em uso', () => {
+  const cache = { checkedAt: Date.now(), current: '2.1.0', latest: null };
+  assert.equal(cacheUsable(cache, '2.1.0'), true);
+  assert.equal(cacheUsable(cache, '2.2.0'), false); // o msr foi atualizado desde entao
+  assert.equal(cacheUsable(null, '2.1.0'), false);
 });
 
 test('dpapi: o que foi protegido volta igual e nao fica legivel', { skip: process.platform !== 'win32' }, async () => {

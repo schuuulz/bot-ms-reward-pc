@@ -1,7 +1,7 @@
 // Atualizacao do msr pelas releases do GitHub.
-//  - checkUpdate: consulta a ultima release (no maximo a cada 12 h; o resultado fica em
-//    data/update.json). So e chamado no menu, no doctor e em `msr update`: execucoes agendadas
-//    nao consultam nada.
+//  - checkUpdate: consulta a ultima release. So e chamado ao abrir o menu, no doctor e em
+//    `msr update`: execucoes agendadas nao consultam nada. A resposta fica em data/update.json
+//    como reserva para quando a consulta falhar.
 //  - applyUpdate: so quando a pessoa pede. Baixa o msr.exe.gz da release por https, confere o
 //    SHA-256 com o que o GitHub informa para o arquivo, testa o exe novo e troca o atual por ele.
 // O que isso garante: o arquivo instalado e exatamente o publicado no repositorio abaixo.
@@ -14,6 +14,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import zlib from 'node:zlib';
 import { config } from './config.js';
+import { POWERSHELL, powershell } from './win.js';
 
 export const REPO = 'schuuulz/bot-ms-reward-pc';
 const ASSET = 'msr.exe.gz';
@@ -21,7 +22,6 @@ const LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
 const ASSET_PREFIX = `https://github.com/${REPO}/releases/download/`;
 // O GitHub redireciona o download para um destes hosts; qualquer outro destino e recusado.
 const DOWNLOAD_HOSTS = /^(github\.com|objects\.githubusercontent\.com|release-assets\.githubusercontent\.com)$/;
-const CHECK_EVERY_MS = 12 * 3600e3;
 const MAX_EXE_BYTES = 400 * 1024 * 1024; // teto do exe descompactado (hoje ~110 MB)
 const CACHE = path.join(config.dataDir, 'update.json');
 
@@ -50,9 +50,12 @@ export function parseRelease(release) {
   return { version, url: asset.browser_download_url, sha256, size: asset.size };
 }
 
-/** O resultado guardado ainda vale? (mesma versao em uso e consultado ha menos de 12 h) */
-export function cacheFresh(cache, current, now = Date.now()) {
-  return Boolean(cache) && cache.current === current && now - cache.checkedAt < CHECK_EVERY_MS;
+/**
+ * A ultima resposta guardada serve de reserva quando a consulta falha? So se foi gravada por
+ * esta mesma versao do msr (depois de atualizar, o que estava guardado ja nao diz nada).
+ */
+export function cacheUsable(cache, current) {
+  return Boolean(cache) && cache.current === current;
 }
 
 function readCache() {
@@ -64,26 +67,27 @@ function readCache() {
 }
 
 /**
- * Ha versao nova? Retorna { current, latest, available } (latest = { version, url, sha256, size }),
- * ou null se nao deu para saber (sem rede, limite da API). Nunca lanca.
+ * Ha versao nova? Consulta o GitHub toda vez (e uma chamada so, ao abrir o menu, o doctor ou o
+ * update): uma release recem-publicada aparece na hora. Se a consulta falhar (sem rede, limite
+ * da API), vale a ultima resposta guardada. Retorna { current, latest, available }, com
+ * latest = { version, url, sha256, size }, ou null se nao deu para saber. Nunca lanca.
  */
-export async function checkUpdate({ force = false } = {}) {
+export async function checkUpdate() {
   const current = currentVersion();
   const result = (latest) => ({ current, latest, available: Boolean(latest) && isNewer(latest.version, current) });
-  const cache = readCache();
-  if (!force && cacheFresh(cache, current)) return result(cache.latest);
   try {
     const res = await fetch(LATEST, {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': `msr/${current}` },
       signal: AbortSignal.timeout(5000),
     });
-    if (res.status !== 200 && res.status !== 404) return null;
+    if (res.status !== 200 && res.status !== 404) throw new Error(`HTTP ${res.status}`);
     const latest = res.status === 200 ? parseRelease(await res.json()) : null; // 404: ainda sem release
     fs.mkdirSync(config.dataDir, { recursive: true });
     fs.writeFileSync(CACHE, JSON.stringify({ checkedAt: Date.now(), current, latest }));
     return result(latest);
   } catch {
-    return null;
+    const cache = readCache();
+    return cacheUsable(cache, current) ? result(cache.latest) : null;
   }
 }
 
@@ -114,8 +118,8 @@ const exec = (file, args, env) =>
 /**
  * Troca o msr.exe em uso pela versao `latest` (de checkUpdate). So funciona no exe.
  * O exe em execucao nao pode ser sobrescrito no Windows, mas pode ser renomeado: ele vira
- * msr.exe.old (apagado na proxima abertura) e o novo entra no mesmo caminho, entao o
- * agendamento continua valendo. Login e dados nao sao tocados.
+ * msr.exe.old (apagado sozinho assim que este processo fecha) e o novo entra no mesmo caminho,
+ * entao o agendamento continua valendo. Login e dados nao sao tocados.
  */
 export async function applyUpdate(latest, log = () => {}) {
   if (!config.packaged) throw new Error('a atualizacao automatica so existe no msr.exe; no checkout use: git pull && npm install');
@@ -146,6 +150,7 @@ export async function applyUpdate(latest, log = () => {}) {
       fs.renameSync(old, exe); // desfaz: o msr atual continua no lugar
       throw err;
     }
+    await deleteWhenThisExits(old).catch(() => {}); // se falhar, a proxima abertura apaga (cleanupOldExe)
     fs.rmSync(CACHE, { force: true });
   } catch (err) {
     fs.rmSync(fresh, { force: true });
@@ -153,7 +158,32 @@ export async function applyUpdate(latest, log = () => {}) {
   }
 }
 
-/** Apaga o msr.exe.old deixado pela ultima atualizacao (ao abrir; ignora se ainda estiver em uso). */
+// O ajudante: espera este processo terminar e apaga o arquivo de vez (sem lixeira). Tenta por
+// 10 s, para o caso de o Windows ainda estar soltando o arquivo. Sem aspas duplas, porque vai
+// dentro de um argumento entre aspas.
+const DELETE_AFTER_EXIT =
+  'Wait-Process -Id $env:MSR_PID -ErrorAction SilentlyContinue; ' +
+  'for ($i = 0; $i -lt 20; $i++) { Remove-Item -LiteralPath $env:MSR_FILE -Force -ErrorAction SilentlyContinue; ' +
+  'if (-not (Test-Path -LiteralPath $env:MSR_FILE)) { break }; Start-Sleep -Milliseconds 500 }';
+
+// Um filho direto do msr morre junto com ele (o Node amarra os filhos ao proprio processo), e sem
+// console o PowerShell nem inicia. Por isso o ajudante e criado pelo Start-Process, como um
+// processo a parte e de janela escondida; ele herda as variaveis MSR_PID e MSR_FILE.
+const START_HELPER = String.raw`
+Start-Process -FilePath $env:MSR_PS -WindowStyle Hidden -ArgumentList ('-NoProfile -NonInteractive -Command "' + $env:MSR_HELPER + '"')
+`;
+
+/**
+ * O exe antigo nao pode ser apagado enquanto este processo roda a partir dele. Um ajudante fica
+ * esperando o msr fechar e apaga o arquivo em seguida, sem precisar abrir o msr de novo.
+ */
+const deleteWhenThisExits = (file) =>
+  powershell(START_HELPER, { env: { MSR_PS: POWERSHELL, MSR_HELPER: DELETE_AFTER_EXIT, MSR_PID: String(process.pid), MSR_FILE: file } });
+
+/**
+ * Reserva do ajudante acima: se o msr.exe.old ainda existir ao abrir (outra execucao do exe antigo
+ * estava em andamento na hora da troca), apaga agora.
+ */
 export function cleanupOldExe() {
   if (config.packaged) fs.rm(`${process.execPath}.old`, { force: true }, () => {});
 }

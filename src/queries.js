@@ -119,8 +119,10 @@ const BLOCKED = new RegExp(
 
 const stripAccents = (s) => s.normalize('NFD').replace(/\p{M}/gu, '');
 
+// As buscas vem de fora (tendencias, manchetes, sugestoes e pesquisas relacionadas do Bing) e
+// acabam digitadas no navegador e impressas no terminal: nada com caractere de controle passa.
 export const usable = (q) =>
-  Boolean(q) && q.length >= 3 && q.length <= 70 && !BLOCKED.test(stripAccents(q.toLowerCase()));
+  Boolean(q) && q.length >= 3 && q.length <= 70 && !/\p{Cc}/u.test(q) && !BLOCKED.test(stripAccents(q.toLowerCase()));
 
 /** Do jeito que se digita na barra de busca: minusculas, as vezes sem acento. */
 function stylize(q) {

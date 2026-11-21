@@ -60,7 +60,7 @@ function cards(rsc) {
     byId.set(o.offerId, {
       section: o.date ? 'dailyset' : 'more',
       offerId: o.offerId,
-      title: o.title,
+      title: String(o.title).replace(/\p{Cc}+/gu, ' ').trim(), // vai para o terminal: sem caractere de controle
       points: Number(o.points) || 0,
       done: o.isCompleted === true,
       href: new URL(o.destination, 'https://rewards.bing.com').href,

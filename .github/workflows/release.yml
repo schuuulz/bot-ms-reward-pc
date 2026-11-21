@@ -34,8 +34,6 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
     defaults:
       run:
         shell: bash
@@ -47,10 +45,17 @@ jobs:
         with:
           node-version: 26
 
+      # O token de escrita so entra nos dois passos que falam com o GitHub, nunca no build.
       - name: Versao e release existente
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(node -p "require('./package.json').version")
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "versao invalida no package.json: $version (use x.y.z)"
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "v$version ja foi publicada; nada a fazer"
@@ -83,6 +88,7 @@ jobs:
       - name: Publicar a release
         if: steps.version.outputs.publish == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           gh release create "v$VERSION" dist/msr.zip dist/msr.exe.gz dist/SHA256SUMS.txt \
