@@ -80,6 +80,16 @@ export async function openBrowser({ headless = config.headless } = {}) {
     }
   }
   const browser = await chromium.connectOverCDP(endpoint());
+  const cdp = await browser.newBrowserCDPSession();
+  // Quem responde na porta precisa ser o Edge do bot (o do perfil dele). Outro navegador aberto
+  // com depuracao na mesma porta nao pode ser controlado por engano.
+  const { commandLine = '' } = await cdp.send('SystemInfo.getInfo').catch(() => ({}));
+  if (!commandLine.toLowerCase().includes(config.profileDir.toLowerCase())) {
+    await browser.close().catch(() => {}); // so desconecta
+    throw new Error(`a porta ${config.port} esta em uso por outro navegador, nao pelo Edge do bot; feche-o ou mude "port" em data/config.json`);
+  }
+  // O bot nunca baixa nada: nem resultado de busca, nem pagina de card.
+  await cdp.send('Browser.setDownloadBehavior', { behavior: 'deny' }).catch(() => {});
   const context = browser.contexts()[0];
   return { browser, context, spawned };
 }

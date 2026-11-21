@@ -14,6 +14,7 @@ import { sessionQuota, targetFraction } from '../src/pacing.js';
 import { headlineToPhrase, usable } from '../src/queries.js';
 import { isEligible } from '../src/rewards.js';
 import { plan } from '../src/run.js';
+import { launchCommand } from '../src/schedule.js';
 import { summarize } from '../src/stats.js';
 
 const pacing = { startHour: 8, finishHour: 20, jitter: 0.2, minPerSession: 3 };
@@ -102,6 +103,15 @@ test('cookies: dominio, caminho e validade', () => {
   assert.equal(cookieHeader(session, 'https://www.bing.com/account/x'), 'a=1; c=3; e=5');
 });
 
+test('cookies: cookie Secure nunca sai numa URL sem https', () => {
+  const session = { cookies: [
+    { name: 'seguro', value: '1', domain: '.bing.com', path: '/', expires: -1, secure: true },
+    { name: 'comum', value: '2', domain: '.bing.com', path: '/', expires: -1, secure: false },
+  ] };
+  assert.equal(cookieHeader(session, 'https://www.bing.com/'), 'seguro=1; comum=2');
+  assert.equal(cookieHeader(session, 'http://www.bing.com/'), 'comum=2');
+});
+
 test('cookies: Set-Cookie substitui o cookie antigo e le os atributos', () => {
   const session = { cookies: [{ name: 'sid', value: 'velho', domain: 'rewards.bing.com', path: '/', expires: -1 }] };
   storeCookies(session, 'https://rewards.bing.com/earn', [
@@ -149,4 +159,10 @@ test('menu: setas dao a volta e Enter escolhe', async () => {
   assert.equal(await pick(['\x1b[B', '\x1b[B', '\r']), 2);
   assert.equal(await pick(['2']), 1);
   assert.equal(await pick(['q']), -1);
+});
+
+test('agendamento: o exe chama a si mesmo; no checkout, node + script', () => {
+  const execPath = 'C:/Program Files/nodejs/node.exe';
+  assert.equal(launchCommand({ packaged: false, execPath, entry: 'C:/meu bot/bin/msr.js' }), '"C:/Program Files/nodejs/node.exe" "C:/meu bot/bin/msr.js"');
+  assert.equal(launchCommand({ packaged: true, execPath: 'C:/Meus Apps/msr.exe', entry: 'C:/x/bin/msr.js' }), '"C:/Meus Apps/msr.exe"');
 });

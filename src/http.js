@@ -7,38 +7,62 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { parseRewards } from './rsc.js';
+import { protect, unprotect } from './win.js';
 
 const SESSION_FILE = path.join(config.dataDir, 'session.json');
 const ORIGINS = ['https://rewards.bing.com/', 'https://www.bing.com/'];
 
-function loadSession() {
+// Os cookies dao acesso a conta, entao o arquivo e gravado protegido pelo Windows (DPAPI, ver
+// win.js): { v: 1, dpapi: "<base64>" }. Abrir e fechar passa pelo PowerShell (~0,3 s cada), por
+// isso a sessao fica em memoria durante o processo e so e regravada quando muda.
+const memory = { session: undefined, json: null, mtime: 0 };
+
+const fileTime = () => fs.statSync(SESSION_FILE, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+
+async function loadSession() {
+  // Outra execucao (agendada + menu aberto) pode ter renovado o arquivo: nesse caso le de novo.
+  if (memory.session !== undefined && memory.mtime === fileTime()) return memory.session;
+  Object.assign(memory, { session: null, json: null, mtime: fileTime() });
   try {
-    return JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+    const stored = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+    if (stored.dpapi) {
+      memory.json = (await unprotect(Buffer.from(stored.dpapi, 'base64'))).toString('utf8');
+      memory.session = JSON.parse(memory.json);
+    } else if (stored.cookies) {
+      await saveSession(stored); // arquivo antigo, em texto puro: regrava protegido
+    }
   } catch {
-    return null;
+    /* sem arquivo, ou protegido por outro usuario/PC: o chamador usa o navegador */
   }
+  return memory.session;
 }
 
-function saveSession(session) {
-  fs.mkdirSync(config.dataDir, { recursive: true });
-  fs.writeFileSync(SESSION_FILE, JSON.stringify(session));
+async function saveSession(session) {
+  const json = JSON.stringify(session);
+  if (json !== memory.json || memory.mtime !== fileTime()) {
+    const sealed = await protect(Buffer.from(json));
+    fs.mkdirSync(config.dataDir, { recursive: true });
+    fs.writeFileSync(SESSION_FILE, JSON.stringify({ v: 1, dpapi: sealed.toString('base64') }));
+  }
+  Object.assign(memory, { session, json, mtime: fileTime() });
 }
 
 /** Copia os cookies do navegador aberto para data/session.json. */
 export async function exportSession(context, page) {
   const cookies = await context.cookies(ORIGINS);
   const userAgent = await page.evaluate(() => navigator.userAgent);
-  saveSession({ savedAt: new Date().toISOString(), userAgent, cookies });
+  await saveSession({ savedAt: new Date().toISOString(), userAgent, cookies });
 }
 
 export function cookieHeader(session, url) {
-  const { hostname, pathname } = new URL(url);
+  const { hostname, pathname, protocol } = new URL(url);
   const now = Date.now() / 1000;
   return session.cookies
     .filter((c) => {
       const domain = c.domain.replace(/^\./, '');
       const hostOk = hostname === domain || (c.domain.startsWith('.') && hostname.endsWith(`.${domain}`));
-      return hostOk && pathname.startsWith(c.path || '/') && (c.expires < 0 || c.expires > now);
+      const secureOk = !c.secure || protocol === 'https:'; // cookie Secure nunca sai sem TLS
+      return hostOk && secureOk && pathname.startsWith(c.path || '/') && (c.expires < 0 || c.expires > now);
     })
     .map((c) => `${c.name}=${c.value}`)
     .join('; ');
@@ -96,6 +120,7 @@ async function get(session, startUrl) {
     if (res.status >= 300 && res.status < 400) {
       const next = new URL(res.headers.get('location') ?? '', url);
       if (!/(^|\.)bing\.com$/.test(next.hostname)) throw new Error('sessao expirada (o site pediu login)');
+      if (next.protocol !== 'https:') throw new Error('o site redirecionou para um endereco sem https');
       url = next.href;
       continue;
     }
@@ -116,12 +141,12 @@ export let httpIssue = null;
 export async function fetchState() {
   httpIssue = null;
   try {
-    const session = loadSession();
+    const session = await loadSession();
     if (!session) throw new Error('ainda nao ha sessao salva');
     const earn = parseRewards(await get(session, 'https://rewards.bing.com/earn'));
     if (!earn) throw new Error('a pagina veio sem os dados da conta');
     const dashboard = parseRewards(await get(session, 'https://rewards.bing.com/dashboard'));
-    saveSession(session);
+    await saveSession(session).catch(() => {}); // nao perde a leitura se nao der para regravar
     return { ...earn, claimable: dashboard?.claimable };
   } catch (err) {
     httpIssue = err.message;

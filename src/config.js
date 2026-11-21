@@ -1,9 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isSea } from 'node:sea';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const dataDir = path.join(root, 'data');
+// Onde ficam o login e os dados. No checkout e a propria pasta do projeto; o msr.exe define
+// MSR_HOME (%LOCALAPPDATA%\msr), porque a pasta do codigo extraido muda a cada versao.
+const home = process.env.MSR_HOME ? path.resolve(process.env.MSR_HOME) : root;
+const dataDir = path.join(home, 'data');
 
 const defaults = {
   port: 9222, // porta de depuracao (CDP) do Edge do bot
@@ -58,7 +62,7 @@ const defaults = {
 
   historyDays: 180, // nunca repete uma busca dentro desse periodo
   statsDays: 400, // dias guardados em data/days.json
-  logDays: 30, // logs mais antigos sao apagados
+  logDays: 30, // dias de log guardados; 0 = guarda sempre (`msr logs keep`)
 };
 
 /** Mescla o override sobre os padroes (objetos por chave; listas e valores sao substituidos). */
@@ -83,7 +87,17 @@ function readOverrides() {
 export const config = {
   ...merge(defaults, readOverrides()),
   root,
+  home,
+  packaged: isSea(), // rodando como msr.exe (scripts/build-exe.js), sem Node instalado
+
   dataDir,
   // Perfil do Edge exclusivo do bot: serve so para estar logado na conta (ver browser.js).
-  profileDir: path.join(root, '.edge-profile'),
+  profileDir: path.join(home, '.edge-profile'),
 };
+
+/** Grava um ajuste em data/config.json (junto com o que ja esta la) e aplica na hora. */
+export function saveConfig(patch) {
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'config.json'), `${JSON.stringify(merge(readOverrides(), patch), null, 2)}\n`);
+  Object.assign(config, merge(config, patch));
+}

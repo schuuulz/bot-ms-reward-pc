@@ -1,9 +1,6 @@
-// Saida do terminal: cores, barras, tabela e o logger (tela + arquivo diario).
+// Saida do terminal: cores, barras, tabela e o painel de estado. O logger fica em logs.js.
 
-import fs from 'node:fs';
-import path from 'node:path';
 import { styleText } from 'node:util';
-import { config } from './config.js';
 
 const colors = process.stdout.isTTY && !process.env.NO_COLOR;
 export const paint = (style, text) => (colors ? styleText(style, String(text)) : String(text));
@@ -22,33 +19,13 @@ export function table(rows, { head } = {}) {
   return [...(head ? [paint('dim', line(head))] : []), ...rows.map(line)].join('\n');
 }
 
-const logDir = path.join(config.dataDir, 'logs');
-export const logFileFor = (date = new Date()) => path.join(logDir, `${date.toLocaleDateString('sv-SE')}.log`);
-
-/** Apaga logs mais antigos que config.logDays. */
-function pruneLogs() {
-  const cutoff = Date.now() - config.logDays * 864e5;
-  for (const name of fs.existsSync(logDir) ? fs.readdirSync(logDir) : []) {
-    const file = path.join(logDir, name);
-    if (fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file, { force: true });
-  }
-}
-
-/** Logger das execucoes: hora + mensagem no arquivo do dia e (se nao --quiet) na tela. */
-export function createLogger({ quiet = false } = {}) {
-  fs.mkdirSync(logDir, { recursive: true });
-  pruneLogs();
-  return (message) => {
-    const time = new Date().toLocaleTimeString('pt-BR');
-    fs.appendFileSync(logFileFor(), `[${time}] ${message}\n`);
-    if (!quiet) console.log(`${paint('dim', time)}  ${message}`);
-  };
-}
-
 const ratio = (c) => (c ? `${c.earned}/${c.max}` : '?');
 
-/** Painel do estado do Rewards (saida de `msr status` e cabecalho do menu). */
-export function renderState(state, pending) {
+/**
+ * Painel do estado do Rewards (saida de `msr status` e cabecalho do menu). `setAside` sao os
+ * cards que o bot parou de tentar: aparecem para a pessoa saber por que continuam no site.
+ */
+export function renderState(state, pending, setAside = []) {
   const daily = state.cards.filter((c) => c.section === 'dailyset');
   const dailyDone = daily.filter((c) => c.done).length;
   const rows = [
@@ -67,5 +44,8 @@ export function renderState(state, pending) {
     ([k, v, extra]) => `  ${paint('dim', k.padEnd(label))}  ${v}${extra ? `${' '.repeat(value - visible(v))}  ${extra}` : ''}`,
   );
   for (const c of pending) lines.push(`  ${' '.repeat(label)}  ${paint('dim', `· ${c.title} (+${c.points})`)}`);
+  for (const c of setAside) {
+    lines.push(`  ${' '.repeat(label)}  ${paint('dim', `· ${c.title} (+${c.points}) · deixado de lado: não completa só com clique`)}`);
+  }
   return lines.join('\n');
 }

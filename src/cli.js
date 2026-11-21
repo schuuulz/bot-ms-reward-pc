@@ -1,16 +1,16 @@
 // Entrada do CLI: interpreta os argumentos, despacha o comando e traduz erros em mensagem,
 // notificacao e codigo de saida.
 
-import fs from 'node:fs';
-import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { EXIT, commands } from './commands.js';
+import { EXIT, accountHelp, commands } from './commands.js';
 import { config } from './config.js';
 import { setTimeScale } from './human.js';
+import { createLogger, logError } from './logs.js';
 import { notify } from './notify.js';
 import { NotLoggedInError } from './rewards.js';
 import { BusyError } from './run.js';
-import { createLogger, logFileFor, paint } from './ui.js';
+import { paint } from './ui.js';
+import { cleanupOldExe, currentVersion } from './update.js';
 
 const OPTIONS = {
   help: { type: 'boolean', short: 'h' },
@@ -24,7 +24,10 @@ const OPTIONS = {
   json: { type: 'boolean' },
   paced: { type: 'boolean' },
   preview: { type: 'boolean' },
+  check: { type: 'boolean' },
   days: { type: 'string' },
+  day: { type: 'string' },
+  errors: { type: 'boolean' },
   tail: { type: 'string' },
   times: { type: 'string' },
   jitter: { type: 'string' },
@@ -34,7 +37,7 @@ const NUMERIC = ['days', 'tail', 'jitter'];
 function help() {
   const width = Math.max(...Object.keys(commands).map((c) => c.length));
   return `
-${paint('bold', 'msr')} — missoes diarias do Microsoft Rewards
+${paint('bold', 'msr')} v${currentVersion()} — missoes diarias do Microsoft Rewards
 
 ${paint('dim', 'uso')}  msr [comando] [opcoes]
 
@@ -56,8 +59,6 @@ ${paint('dim', 'saida')}  0 ok · 1 erro · 2 nao logado · 3 Bing nao creditou 
 `;
 }
 
-const version = () => JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
-
 /** Normaliza as opcoes: nomes em camelCase e numeros convertidos. */
 function readOptions(values) {
   const opts = {};
@@ -78,8 +79,9 @@ export async function main(argv = process.argv.slice(2)) {
     return EXIT.error;
   }
   const [name = process.stdout.isTTY && process.stdin.isTTY ? 'menu' : 'help', ...args] = parsed.positionals;
-  if (parsed.values.version) return void console.log(version());
+  if (parsed.values.version) return void console.log(currentVersion());
   if (parsed.values.help || name === 'help') return void console.log(help());
+  cleanupOldExe(); // resto da ultima atualizacao, se houver
 
   const command = commands[name];
   if (!command) {
@@ -99,10 +101,10 @@ export async function main(argv = process.argv.slice(2)) {
       return EXIT.error;
     }
     const notLogged = err instanceof NotLoggedInError;
-    const message = notLogged ? 'conta deslogada no Edge do bot; rode: msr login' : err.message;
-    // Tela: mensagem curta. Arquivo de log: mensagem + pilha, para diagnosticar depois.
-    console.error(`${paint('red', 'erro:')} ${message}`);
-    fs.appendFileSync(logFileFor(), `[${new Date().toLocaleTimeString('pt-BR')}] ERRO: ${notLogged ? message : (err.stack ?? err)}\n`);
+    const message = notLogged ? 'conta Microsoft não detectada no Edge do bot; abra o msr para ver como resolver' : err.message;
+    // Tela: mensagem curta. Log: mensagem + pilha, para diagnosticar depois (msr logs --errors).
+    console.error(`${paint('red', 'erro:')} ${message}${notLogged ? `\n${accountHelp()}` : ''}`);
+    logError(notLogged ? message : String(err.stack ?? err));
     if (opts?.notify && config.notify) await notify('Microsoft Rewards: o bot falhou', message);
     return notLogged ? EXIT.notLoggedIn : EXIT.error;
   }

@@ -2,26 +2,25 @@
 // aleatorio, chamando `msr run --paced`. Nenhum processo fica residente entre as execucoes.
 // Os parametros vao por variavel de ambiente para o PowerShell (sem escape de aspas).
 
-import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { config } from './config.js';
+import { powershell as run } from './win.js';
 
-const ENTRY = path.join(config.root, 'bin', 'msr.js');
-
-function powershell(script, env = {}) {
-  return new Promise((resolve, reject) => {
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-      { env: { ...process.env, ...env }, windowsHide: true, timeout: 30000 },
-      (err, stdout, stderr) => {
-        if (!err) return resolve(stdout.trim());
-        const detail = stderr.trim().split('\n')[0] || `PowerShell saiu com codigo ${err.code}`;
-        reject(new Error(`Agendador de Tarefas: ${detail}`));
-      },
-    );
-  });
+/**
+ * Como o agendador chama o msr: o proprio msr.exe, ou node + script no checkout. No exe a pasta
+ * do codigo extraido muda a cada versao, entao o script nunca entra no comando.
+ */
+export function launchCommand({ packaged, execPath, entry }) {
+  return (packaged ? [execPath] : [execPath, entry]).map((p) => `"${p}"`).join(' ');
 }
+
+const currentLaunch = () =>
+  launchCommand({ packaged: config.packaged, execPath: process.execPath, entry: path.join(config.root, 'bin', 'msr.js') });
+
+const powershell = (script, env = {}) =>
+  run(script, { env }).catch((err) => {
+    throw new Error(`Agendador de Tarefas: ${err.message}`);
+  });
 
 // `conhost --headless` roda o node sem abrir janela de console a cada disparo.
 const INSTALL = String.raw`
@@ -30,7 +29,7 @@ $delay = New-TimeSpan -Minutes ([int]$env:MSR_JITTER)
 $triggers = $env:MSR_TIMES.Split(',') | ForEach-Object {
   if ([int]$env:MSR_JITTER -gt 0) { New-ScheduledTaskTrigger -Daily -At $_ -RandomDelay $delay } else { New-ScheduledTaskTrigger -Daily -At $_ }
 }
-$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument ('--headless "{0}" "{1}" run --paced --quiet --notify' -f $env:MSR_NODE, $env:MSR_ENTRY) -WorkingDirectory $env:MSR_ROOT
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument ('--headless {0} run --paced --quiet --notify' -f $env:MSR_CMD) -WorkingDirectory $env:MSR_CWD
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $env:MSR_TASK -Action $action -Trigger $triggers -Settings $settings -Description 'Microsoft Rewards: buscas e cards (msr run --paced)' -Force | Out-Null
 `;
@@ -42,6 +41,7 @@ $info = $task | Get-ScheduledTaskInfo
 $fmt = { param($d) if ($d -and $d.Year -gt 2000) { $d.ToString('yyyy-MM-dd HH:mm') } else { $null } }
 @{
   state = [string]$task.State
+  command = [string]$task.Actions[0].Arguments
   times = @($task.Triggers | ForEach-Object { ([datetime]$_.StartBoundary).ToString('HH:mm') })
   jitterMinutes = @($task.Triggers | ForEach-Object { if ($_.RandomDelay) { [System.Xml.XmlConvert]::ToTimeSpan($_.RandomDelay).TotalMinutes } else { 0 } })[0]
   lastRun = & $fmt $info.LastRunTime
@@ -58,9 +58,8 @@ export async function installSchedule({ times = config.schedule.times, jitterMin
     MSR_TASK: config.schedule.taskName,
     MSR_TIMES: times.join(','),
     MSR_JITTER: String(jitterMinutes),
-    MSR_NODE: process.execPath,
-    MSR_ENTRY: ENTRY,
-    MSR_ROOT: config.root,
+    MSR_CMD: currentLaunch(),
+    MSR_CWD: config.home,
   });
   return scheduleStatus();
 }
@@ -72,10 +71,15 @@ export async function removeSchedule() {
   );
 }
 
-/** Retorna null se a tarefa nao existe. */
+/**
+ * Retorna null se a tarefa nao existe. `stale`: a tarefa chama um caminho que nao e o deste msr
+ * (o exe ou a pasta mudou de lugar depois de agendar) e precisa ser instalada de novo.
+ */
 export async function scheduleStatus() {
   const out = await powershell(STATUS, { MSR_TASK: config.schedule.taskName });
-  return out ? JSON.parse(out) : null;
+  if (!out) return null;
+  const info = JSON.parse(out);
+  return { ...info, stale: !info.command.toLowerCase().includes(currentLaunch().toLowerCase()) };
 }
 
 /** Dispara a tarefa agora (para testar o agendamento). */

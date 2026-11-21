@@ -1,0 +1,89 @@
+# Testa em todo push e PR. Em push na main, se a versao do package.json ainda nao tem release,
+# gera o msr.exe e publica a release: lancar uma versao e subir o numero em package.json e dar push.
+name: release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Padrao so leitura; so o job de release pode escrever (criar a release).
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: npm ci --ignore-scripts
+      - run: npm test
+
+  release:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+
+      - name: Versao e release existente
+        id: version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "v$version ja foi publicada; nada a fazer"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gerar o msr.exe
+        if: steps.version.outputs.publish == 'true'
+        run: |
+          npm ci --ignore-scripts
+          npm run build:exe
+
+      - name: Testar o exe gerado
+        if: steps.version.outputs.publish == 'true'
+        env:
+          MSR_HOME: ${{ runner.temp }}/msr-home
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          got=$(./dist/msr.exe --version)
+          echo "msr.exe --version: $got"
+          test "$got" = "$VERSION"
+          ./dist/msr.exe --help > /dev/null
+
+      - name: Empacotar
+        if: steps.version.outputs.publish == 'true'
+        run: npm run package
+
+      - name: Publicar a release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/msr.zip dist/msr.exe.gz dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "msr v$VERSION" --generate-notes

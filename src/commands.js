@@ -3,27 +3,64 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { pendingCards } from './activities.js';
+import { pendingCards, setAsideCards } from './activities.js';
 import { cdpAlive, findEdge } from './browser.js';
-import { config } from './config.js';
+import { config, saveConfig } from './config.js';
 import { History } from './history.js';
 import { fetchState, httpIssue } from './http.js';
+import { formatLine, logStore } from './logs.js';
 import { pressEnter, select } from './menu.js';
 import { notify } from './notify.js';
 import { cleanProfile, dirSize, profileInfo } from './profile.js';
 import { QueryPlanner } from './queries.js';
-import { DASHBOARD } from './rewards.js';
+import { DASHBOARD, NotLoggedInError, readState } from './rewards.js';
 import { parseRewards } from './rsc.js';
 import { currentState, run, withBrowser } from './run.js';
 import { installSchedule, removeSchedule, runScheduleNow, scheduleStatus } from './schedule.js';
 import { loadDays } from './stats.js';
-import { logFileFor, num, paint, renderState, table } from './ui.js';
+import { applyUpdate, checkUpdate, currentVersion } from './update.js';
+import { num, paint, renderState, table } from './ui.js';
 
 export const EXIT = { ok: 0, error: 1, notLoggedIn: 2, notCredited: 3 };
 
 const mb = (bytes) => `${(bytes / 1048576).toFixed(0)} MB`;
 const ok = (text) => `  ${paint('green', '✓')} ${text}`;
 const warn = (text) => `  ${paint('yellow', '!')} ${text}`;
+
+/**
+ * O que fazer quando a conta nao esta logada. O Edge do bot entra sozinho na conta Microsoft em
+ * que o Windows esta logado; o msr nunca pede login nem senha.
+ */
+export function accountHelp() {
+  return [
+    '  O msr usa a conta Microsoft em que o Windows está logado:',
+    '    1. Abra Configurações > Contas > Suas informações',
+    '    2. Escolha "Entrar com uma conta Microsoft" e conclua',
+    '    3. Abra o msr de novo',
+    ...(config.packaged ? [] : ['  No checkout também dá para entrar pela janela do Edge do bot: msr login']),
+  ].join('\n');
+}
+
+/** Confere se o Edge do bot esta logado e salva a sessao. Retorna o estado, ou null se nao esta. */
+async function checkAccount(opts) {
+  console.log(paint('dim', '  verificando sua conta Microsoft (pode levar um minuto)...'));
+  let reason;
+  // Num perfil recem-criado a primeira visita pode nao carregar a tempo; a segunda da certo.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const state = await withBrowser(opts, (page) => readState(page));
+      if (state) {
+        console.log(ok(`conta detectada · saldo ${num(state.balance)}`));
+        return state;
+      }
+      reason = 'a pagina veio sem os dados da conta';
+    } catch (err) {
+      reason = err instanceof NotLoggedInError ? 'o site pediu login' : err.message;
+    }
+  }
+  console.log(`${warn(`conta Microsoft não detectada (${reason})`)}\n${accountHelp()}`);
+  return null;
+}
 
 /** Roda uma execucao e resume o resultado. Usado por run/search/cards/claim. */
 async function execute(what, opts, log) {
@@ -44,8 +81,9 @@ async function execute(what, opts, log) {
 async function status(_args, opts) {
   const { state, source } = await currentState(opts);
   if (!state) throw new Error('nao consegui ler o estado do Rewards');
-  if (opts.json) return void console.log(JSON.stringify({ ...state, pending: pendingCards(state.cards) }, null, 2));
-  console.log(`\n${renderState(state, pendingCards(state.cards))}\n  ${paint('dim', `lido por ${source}`)}\n`);
+  const [pending, setAside] = [pendingCards(state.cards), setAsideCards(state.cards)];
+  if (opts.json) return void console.log(JSON.stringify({ ...state, pending, setAside }, null, 2));
+  console.log(`\n${renderState(state, pending, setAside)}\n  ${paint('dim', `lido por ${source}`)}\n`);
 }
 
 function stats(_args, opts) {
@@ -62,23 +100,107 @@ function stats(_args, opts) {
   console.log(`\n${table(rows, { head: ['dia', 'saldo', 'pontos', 'buscas', 'diario', 'obs'] })}\n`);
 }
 
-function logs(_args, opts) {
-  const dir = path.dirname(logFileFor());
-  const files = fs.existsSync(dir) ? fs.readdirSync(dir).sort() : [];
-  if (!files.length) return void console.log('sem logs ainda');
-  const file = fs.existsSync(logFileFor()) ? logFileFor() : path.join(dir, files.at(-1));
-  const lines = fs.readFileSync(file, 'utf8').trimEnd().split('\n');
-  console.log(paint('dim', file));
-  console.log(lines.slice(-(opts.tail ?? 40)).join('\n'));
+const keepLabel = () => (config.logDays > 0 ? `${config.logDays} dia(s)` : 'sempre');
+
+/** Mostra as linhas de um dia (padrao: o ultimo com log) ou, com errors e sem dia, todos os erros. */
+function showLogs({ day, tail = 40, errors = false } = {}) {
+  if (day && !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error(`dia invalido: "${day}" (use AAAA-MM-DD)`);
+  const found = logStore().read({ day, tail, errors });
+  if (!found.rows.length) return void console.log(errors ? '  nenhum erro registrado' : '  sem logs para mostrar');
+  console.log(paint('dim', `  ${found.day ?? 'erros de todos os dias'} · ${found.rows.length} linha(s)`));
+  console.log(found.rows.map((row) => formatLine(row, { withDay: !found.day })).join('\n'));
+}
+
+/** Por quanto tempo guardar os logs: um numero de dias, ou "sempre". */
+function keepLogs(value) {
+  const days = /^(sempre|0)$/i.test(value ?? '') ? 0 : Number(value);
+  if (!Number.isInteger(days) || days < 0) throw new Error('use: msr logs keep <dias|sempre>');
+  saveConfig({ logDays: days });
+  const removed = logStore().prune(days);
+  console.log(ok(`logs guardados por: ${keepLabel()}${removed ? ` (${removed} linha(s) antigas apagadas)` : ''}`));
+}
+
+/** Todos os logs num arquivo de texto (o banco nao abre no Bloco de Notas). */
+function exportLogs(target) {
+  const store = logStore();
+  const text = store.days().flatMap(({ day }) => [`# ${day}`, ...store.read({ day }).rows.map((row) => formatLine(row)), '']).join('\n');
+  if (!text) return void console.log('  sem logs para exportar');
+  const file = path.resolve(target ?? path.join(config.dataDir, 'msr-logs.txt'));
+  fs.writeFileSync(file, text);
+  console.log(ok(`logs exportados para ${file}`));
+}
+
+function logs([action = 'show', arg], opts) {
+  if (action === 'show') {
+    showLogs({ day: opts.day, tail: opts.tail, errors: opts.errors });
+  } else if (action === 'days') {
+    const days = logStore().days();
+    if (!days.length) return void console.log('  sem logs ainda');
+    console.log(`\n${table(days.map((d) => [d.day, d.lines, d.errors || '']), { head: ['dia', 'linhas', 'erros'] })}\n\n  ${paint('dim', `guardados por: ${keepLabel()}`)}\n`);
+  } else if (action === 'keep') {
+    keepLogs(arg);
+  } else if (action === 'export') {
+    exportLogs(arg);
+  } else if (action === 'clear') {
+    logStore().clear();
+    console.log(ok('todos os logs foram apagados'));
+  } else {
+    throw new Error(`acao desconhecida: logs ${action} (use days, keep, export ou clear)`);
+  }
+}
+
+/** Submenu dos logs: ver, escolher por quanto tempo guardar, exportar e apagar. */
+async function logsMenu() {
+  const choose = async (entries) => entries[await select(entries.map(([label]) => label))]?.[1];
+  const action = await choose([
+    ['Ver o último dia', () => showLogs()],
+    ['Ver outro dia', async () => {
+      const days = logStore().days().reverse().slice(0, 14);
+      const day = await choose([...days.map((d) => [`${d.day}  (${d.lines} linhas)`, d.day]), ['Voltar', null]]);
+      return day ? showLogs({ day, tail: 0 }) : false;
+    }],
+    ['Só erros', () => showLogs({ errors: true })],
+    [`Guardar por... (agora: ${keepLabel()})`, async () => {
+      const value = await choose([['7 dias', '7'], ['30 dias', '30'], ['90 dias', '90'], ['Sempre', 'sempre'], ['Voltar', null]]);
+      return value ? keepLogs(value) : false;
+    }],
+    ['Exportar para arquivo de texto', () => exportLogs()],
+    ['Apagar todos os logs', async () => {
+      if (!(await choose([['Não, voltar', false], ['Sim, apagar tudo', true]]))) return false;
+      logs(['clear'], {});
+    }],
+    ['Voltar', null],
+  ]);
+  if (!action) return false;
+  console.log('');
+  return action();
 }
 
 function printSchedule(info) {
-  if (!info) return void console.log('  sem agendamento. Para criar: msr schedule install');
+  if (!info) return void console.log('  sem agendamento. Para criar: "Ativar" no menu Agendamento, ou msr schedule install');
   const failed = info.lastRun && info.lastResult !== 0;
   console.log(`  ${paint('dim', 'horarios')}   ${info.times.join(', ')}  ${paint('dim', `(+ ate ${info.jitterMinutes} min aleatorios)`)}`);
   console.log(`  ${paint('dim', 'estado')}     ${info.state}`);
   console.log(`  ${paint('dim', 'ultima')}     ${info.lastRun ?? 'nunca'}${failed ? paint('yellow', `  (codigo ${info.lastResult})`) : ''}`);
   console.log(`  ${paint('dim', 'proxima')}    ${info.nextRun ?? '-'}`);
+  if (info.stale) console.log(warn(STALE_SCHEDULE));
+}
+
+const STALE_SCHEDULE = 'o agendamento chama o msr em outro caminho (ele mudou de lugar?); ative o agendamento de novo';
+
+/** Submenu do agendamento: no msr.exe nao ha linha de comando para `msr schedule install`. */
+async function scheduleMenu(opts) {
+  const entries = [
+    ['Ver agendamento', 'status'],
+    [`Ativar (todo dia, perto de ${config.schedule.times.join(', ')})`, 'install'],
+    ['Desativar', 'remove'],
+    ['Disparar agora (teste)', 'test'],
+    ['Voltar', null],
+  ];
+  const action = entries[await select(entries.map(([label]) => label))]?.[1];
+  if (!action) return false;
+  console.log('');
+  await schedule([action], opts);
 }
 
 async function schedule([action = 'status'], opts) {
@@ -120,14 +242,35 @@ async function clean() {
   console.log(ok(`perfil limpo: ${mb(freed)} liberados, agora ${mb(dirSize(config.profileDir))}`));
 }
 
+const versionLabel = () => `msr v${currentVersion()}${config.packaged ? '' : ' (checkout)'}`;
+
+/**
+ * Atualiza para a ultima release do GitHub (so quando a pessoa pede). Retorna true se o msr.exe
+ * foi trocado: dali em diante e preciso abrir o msr de novo.
+ */
+async function update(_args, opts) {
+  const news = await checkUpdate({ force: true });
+  if (!news) throw new Error('nao consegui consultar as versoes no GitHub (sem internet?)');
+  if (!news.available) return void console.log(ok(`${versionLabel()} ja e a versao mais recente`));
+  console.log(`  ${versionLabel()} -> nova versao v${news.latest.version} disponivel`);
+  if (opts.check) return;
+  if (!config.packaged) return void console.log('  no checkout, atualize com: git pull && npm install');
+  await applyUpdate(news.latest, (message) => console.log(`  ${message}`));
+  console.log(ok(`atualizado para v${news.latest.version}; abra o msr de novo`));
+  return true;
+}
+
 async function doctor(_args, opts) {
-  console.log(`\n${ok(`Node ${process.version}`)}`);
+  console.log(`\n${ok(`${versionLabel()} · Node ${process.version}`)}`);
+  const news = await checkUpdate();
+  if (news?.available) console.log(warn(`nova versao v${news.latest.version} disponivel (msr update, ou "Quero Atualizar" no menu)`));
+  else console.log(news ? ok('esta e a versao mais recente') : warn('nao consegui consultar se ha versao nova'));
   const edge = findEdge();
   console.log(edge ? ok(`Edge em ${edge}`) : warn('msedge.exe nao encontrado (ajuste edgePaths em data/config.json)'));
 
   const state = await fetchState();
   if (!state) {
-    console.log(warn(`leitura por requisicao falhou: ${httpIssue}. A proxima execucao usa o navegador e renova a sessao; se persistir: msr login`));
+    console.log(warn(`leitura por requisicao falhou: ${httpIssue}. A proxima execucao usa o navegador e renova a sessao; se persistir:\n${accountHelp()}`));
   } else {
     console.log(ok(`sessao valida · saldo ${num(state.balance)}`));
     const missing = [['contador de buscas', state.search], ['dia do Rewards', state.day], ['cards', state.cards.length], ['pontos a reivindicar', state.claimable !== undefined]]
@@ -142,7 +285,8 @@ async function doctor(_args, opts) {
   console.log(ok(`dados do bot: ${mb(dirSize(config.dataDir))} em ${config.dataDir}`));
 
   const sched = await scheduleStatus().catch(() => null);
-  console.log(sched ? ok(`agendado: ${sched.times.join(', ')} · proxima ${sched.nextRun ?? '-'}`) : warn('sem agendamento (msr schedule install)'));
+  if (!sched) console.log(warn('sem agendamento (msr schedule install, ou "Agendamento" no menu)'));
+  else console.log(sched.stale ? warn(STALE_SCHEDULE) : ok(`agendado: ${sched.times.join(', ')} · proxima ${sched.nextRun ?? '-'}`));
 
   if (opts.notify) console.log((await notify('Microsoft Rewards', 'Teste de notificacao do msr.')) ? ok('notificacao enviada') : warn('nao consegui enviar a notificacao'));
   console.log('');
@@ -165,26 +309,42 @@ async function menu(_args, opts, log) {
     ['Só cards', () => execute({ parts: ['cards'] }, opts, log)],
     ['Reivindicar pontos', () => execute({ parts: [], claim: true }, opts, log)],
     ['Histórico de pontos', () => stats([], opts)],
-    ['Agendamento', () => schedule([], opts)],
-    ['Log de hoje', () => logs([], opts)],
+    ['Agendamento', () => scheduleMenu(opts)],
+    ['Logs', () => logsMenu()],
     ['Diagnóstico', () => doctor([], opts)],
-    ['Sair', null],
+    ['Verificar conta', () => checkAccount(opts)],
   ];
+  // Ao abrir: ve se ha versao nova (no maximo uma consulta a cada 12 h) e, sem sessao (primeira
+  // vez ou sessao expirada), confere a conta antes do menu.
+  const [news, logged] = await Promise.all([checkUpdate(), fetchState()]);
+  if (!logged) await checkAccount(opts);
+  let updated = false;
+  if (news?.available) {
+    entries.push([`Quero Atualizar (v${news.current} → v${news.latest.version})`, async () => {
+      updated = (await update([], {})) === true;
+    }]);
+  }
+  entries.push(['Sair', null]);
+
   for (;;) {
     const state = await fetchState();
-    console.log(`\n  ${paint('bold', 'Microsoft Rewards')}\n`);
-    console.log(state ? renderState(state, pendingCards(state.cards)) : `  ${paint('dim', 'estado indisponivel por requisicao; rode "Rodar tudo" ou msr login')}`);
+    console.log(`\n  ${paint('bold', 'Microsoft Rewards')}  ${paint('dim', `· ${versionLabel()}`)}`);
+    if (news?.available) console.log(`  ${paint('yellow', `nova versão v${news.latest.version} disponível: escolha "Quero Atualizar"`)}`);
+    console.log('');
+    console.log(state ? renderState(state, pendingCards(state.cards), setAsideCards(state.cards)) : `  ${paint('dim', 'conta não detectada; veja "Verificar conta"')}`);
     console.log('');
     const choice = await select(entries.map(([label]) => label));
     const action = entries[choice]?.[1];
     if (!action) return;
     console.log('');
+    let pause = true;
     try {
-      await action();
+      pause = (await action()) !== false; // false: a acao so voltou, nao ha o que ler
     } catch (err) {
-      console.log(warn(err.message));
+      console.log(warn(err instanceof NotLoggedInError ? `conta Microsoft não detectada\n${accountHelp()}` : err.message));
     }
-    await pressEnter(paint('dim', '\n  Enter para voltar ao menu '));
+    if (pause) await pressEnter(paint('dim', updated ? '\n  Enter para fechar ' : '\n  Enter para voltar ao menu '));
+    if (updated) return; // o exe foi trocado: este processo ainda e o antigo
   }
 }
 
@@ -195,11 +355,13 @@ export const commands = {
   cards: { summary: 'so os cards (conjunto diario + continuar ganhando)', action: (_a, o, log) => execute({ parts: ['cards'] }, o, log) },
   claim: { summary: 'reivindica os pontos pendentes; --preview so mostra', action: (_a, o, log) => execute({ parts: [], claim: true, preview: o.preview }, o, log) },
   stats: { summary: 'historico de pontos por dia (--days N)', action: stats },
-  logs: { summary: 'log de hoje (--tail N)', action: logs },
+  logs: { summary: 'logs (--day AAAA-MM-DD, --tail N, --errors) | days | keep <dias|sempre> | export | clear', action: logs },
   schedule: { summary: 'agendamento: install | remove | status | test (--times, --jitter)', action: schedule },
-  login: { summary: 'abre o Edge do bot com janela para fazer login', action: login },
+  // No msr.exe nao ha login pelo app: o Edge do bot entra sozinho pela conta do Windows.
+  ...(config.packaged ? {} : { login: { summary: 'abre o Edge do bot com janela para fazer login', action: login } }),
   clean: { summary: 'apaga extensoes, dados sincronizados e caches do perfil do bot', action: clean },
-  doctor: { summary: 'confere Edge, sessao, leitor do site, perfil e agendamento', action: doctor },
+  update: { summary: 'atualiza para a ultima versao publicada no GitHub; --check so confere', action: async (a, o) => void (await update(a, o)) },
+  doctor: { summary: 'confere versao, Edge, sessao, leitor do site, perfil e agendamento', action: doctor },
   queries: { summary: 'exemplos de buscas que seriam feitas', action: queries },
   menu: { summary: 'menu interativo (padrao quando nao ha comando)', action: menu },
 };
