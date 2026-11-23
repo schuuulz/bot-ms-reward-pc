@@ -2,9 +2,11 @@
 //  - checkUpdate: consulta a ultima release. So e chamado ao abrir o menu, no doctor e em
 //    `msr update`: execucoes agendadas nao consultam nada. A resposta fica em data/update.json
 //    como reserva para quando a consulta falhar.
-//  - applyUpdate: so quando a pessoa pede. Baixa o msr.exe.gz da release por https, confere o
-//    SHA-256 com o que o GitHub informa para o arquivo, testa o exe novo e troca o atual por ele.
+//  - applyUpdate: so quando a pessoa pede. Baixa o msr.zip da release por https, confere o
+//    SHA-256 com o que o GitHub informa para o arquivo, tira o msr.exe de dentro, testa o exe
+//    novo e troca o atual por ele.
 // O que isso garante: o arquivo instalado e exatamente o publicado no repositorio abaixo.
+// A release tem um arquivo so, o msr.zip: o mesmo que a pessoa baixa a mao na primeira vez.
 
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -17,7 +19,8 @@ import { config } from './config.js';
 import { POWERSHELL, powershell } from './win.js';
 
 export const REPO = 'schuuulz/bot-ms-reward-pc';
-const ASSET = 'msr.exe.gz';
+const ASSET = 'msr.zip';
+const EXE_IN_ZIP = 'msr.exe';
 const LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
 const ASSET_PREFIX = `https://github.com/${REPO}/releases/download/`;
 // O GitHub redireciona o download para um destes hosts; qualquer outro destino e recusado.
@@ -108,6 +111,99 @@ async function download(startUrl) {
   throw new Error('redirecionamentos demais');
 }
 
+/** Um Transform que deixa passar no maximo `maxBytes` e chama `onChunk` a cada pedaco. */
+const capped = (maxBytes, onChunk = () => {}) => {
+  let total = 0;
+  return new Transform({
+    transform(chunk, _enc, done) {
+      if ((total += chunk.length) > maxBytes) return done(new Error('arquivo maior que o esperado'));
+      onChunk(chunk);
+      done(null, chunk);
+    },
+  });
+};
+
+/**
+ * Onde esta a entrada `name` dentro do zip aberto em `fd`, lida do diretorio central (o indice no
+ * fim do arquivo, o unico lugar onde os tamanhos sao sempre confiaveis). Retorna
+ * { method, crc, compressedSize, size, dataStart }.
+ */
+function findZipEntry(fd, name) {
+  const bad = (why) => new Error(`zip invalido: ${why}`);
+  const read = (position, length) => {
+    const buffer = Buffer.alloc(length);
+    if (fs.readSync(fd, buffer, 0, length, position) !== length) throw bad('arquivo cortado');
+    return buffer;
+  };
+  const fileSize = fs.fstatSync(fd).size;
+  // O registro final fica nos ultimos 22 bytes, mais um comentario de ate 64 KB.
+  const tail = read(Math.max(0, fileSize - 65557), Math.min(fileSize, 65557));
+  const end = tail.lastIndexOf(Buffer.from('PK\x05\x06', 'latin1'));
+  if (end < 0 || end + 22 > tail.length) throw bad('sem o indice');
+  const count = tail.readUInt16LE(end + 10);
+  const directorySize = tail.readUInt32LE(end + 12);
+  const directoryStart = tail.readUInt32LE(end + 16);
+  if (count === 0xffff || directoryStart === 0xffffffff || directoryStart + directorySize > fileSize) throw bad('indice fora do esperado');
+
+  const directory = read(directoryStart, directorySize);
+  for (let at = 0, i = 0; i < count; i++) {
+    if (at + 46 > directory.length || directory.readUInt32LE(at) !== 0x02014b50) throw bad('indice corrompido');
+    const [nameLength, extraLength, commentLength] = [28, 30, 32].map((o) => directory.readUInt16LE(at + o));
+    if (directory.toString('utf8', at + 46, at + 46 + nameLength) === name) {
+      const entry = {
+        method: directory.readUInt16LE(at + 10),
+        crc: directory.readUInt32LE(at + 16),
+        compressedSize: directory.readUInt32LE(at + 20),
+        size: directory.readUInt32LE(at + 24),
+      };
+      const encrypted = directory.readUInt16LE(at + 8) & 1;
+      if (encrypted || ![0, 8].includes(entry.method) || entry.size === 0xffffffff || !entry.compressedSize) throw bad('formato nao suportado');
+      const offset = directory.readUInt32LE(at + 42);
+      const local = read(offset, 30);
+      if (local.readUInt32LE(0) !== 0x04034b50) throw bad('entrada corrompida');
+      entry.dataStart = offset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
+      if (entry.dataStart + entry.compressedSize > fileSize) throw bad('entrada cortada');
+      return entry;
+    }
+    at += 46 + nameLength + extraLength + commentLength;
+  }
+  throw bad(`nao tem ${name}`);
+}
+
+/**
+ * Tira a entrada `name` do arquivo `zip` e grava em `target`, em fluxo (o exe tem mais de 100 MB:
+ * nada disso fica inteiro na memoria). Confere o tamanho e o CRC-32 que o zip declara e recusa o
+ * que passar de `maxBytes`. Se algo nao conferir, `target` nao fica no disco.
+ */
+export async function extractZipEntry(zip, name, target, maxBytes) {
+  const fd = fs.openSync(zip, 'r');
+  let entry;
+  try {
+    entry = findZipEntry(fd, name);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (entry.size > maxBytes) throw new Error('arquivo maior que o esperado');
+  let crc = 0;
+  let written = 0;
+  const check = capped(maxBytes, (chunk) => {
+    crc = zlib.crc32(chunk, crc);
+    written += chunk.length;
+  });
+  try {
+    await pipeline(
+      fs.createReadStream(zip, { start: entry.dataStart, end: entry.dataStart + entry.compressedSize - 1 }),
+      ...(entry.method === 8 ? [zlib.createInflateRaw()] : []),
+      check,
+      fs.createWriteStream(target),
+    );
+    if (written !== entry.size || crc !== entry.crc) throw new Error(`zip invalido: ${name} nao confere com o tamanho e o CRC declarados`);
+  } catch (err) {
+    fs.rmSync(target, { force: true });
+    throw err;
+  }
+}
+
 const exec = (file, args, env) =>
   new Promise((resolve, reject) => {
     execFile(file, args, { env: { ...process.env, ...env }, windowsHide: true, timeout: 120000 }, (err, stdout) =>
@@ -125,18 +221,16 @@ export async function applyUpdate(latest, log = () => {}) {
   if (!config.packaged) throw new Error('a atualizacao automatica so existe no msr.exe; no checkout use: git pull && npm install');
   const exe = process.execPath;
   const fresh = `${exe.replace(/\.exe$/i, '')}.new.exe`; // precisa terminar em .exe para ser testado
+  const zip = `${exe.replace(/\.exe$/i, '')}.new.zip`;
   const old = `${exe}.old`;
   try {
     log(`baixando a versao ${latest.version} (${(latest.size / 1048576).toFixed(0)} MB)...`);
     const res = await download(latest.url);
     const hash = crypto.createHash('sha256');
-    let written = 0;
-    const hashing = new Transform({ transform: (chunk, _enc, done) => done(null, (hash.update(chunk), chunk)) });
-    const capped = new Transform({
-      transform: (chunk, _enc, done) => ((written += chunk.length) > MAX_EXE_BYTES ? done(new Error('arquivo maior que o esperado')) : done(null, chunk)),
-    });
-    await pipeline(Readable.fromWeb(res.body), hashing, zlib.createGunzip(), capped, fs.createWriteStream(fresh));
+    await pipeline(Readable.fromWeb(res.body), capped(MAX_EXE_BYTES, (chunk) => hash.update(chunk)), fs.createWriteStream(zip));
     if (hash.digest('hex') !== latest.sha256) throw new Error('o arquivo baixado nao confere com o hash publicado (SHA-256); nada foi alterado');
+    await extractZipEntry(zip, EXE_IN_ZIP, fresh, MAX_EXE_BYTES);
+    fs.rmSync(zip, { force: true });
 
     log('conferido; testando o novo msr.exe...');
     const reported = await exec(fresh, ['--version']);
@@ -154,6 +248,7 @@ export async function applyUpdate(latest, log = () => {}) {
     fs.rmSync(CACHE, { force: true });
   } catch (err) {
     fs.rmSync(fresh, { force: true });
+    fs.rmSync(zip, { force: true });
     throw err;
   }
 }

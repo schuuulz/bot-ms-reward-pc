@@ -10,9 +10,10 @@ import { pendingCards } from '../src/activities.js';
 import { userAgentFor } from '../src/browser.js';
 import { outsideHome } from '../src/commands.js';
 import { History, normalize } from '../src/history.js';
-import { cookieHeader, storeCookies } from '../src/http.js';
+import { acceptLanguage, cookieHeader, storeCookies } from '../src/http.js';
 import { move, select } from '../src/menu.js';
 import { sessionQuota, targetFraction } from '../src/pacing.js';
+import { setProfileLanguages } from '../src/profile.js';
 import { headlineToPhrase, usable } from '../src/queries.js';
 import { isEligible } from '../src/rewards.js';
 import { plan } from '../src/run.js';
@@ -186,6 +187,34 @@ test('menu: setas dao a volta e Enter escolhe', async () => {
   assert.equal(await pick(['\x1b[B', '\x1b[B', '\r']), 2);
   assert.equal(await pick(['2']), 1);
   assert.equal(await pick(['q']), -1);
+});
+
+test('idioma: o cabecalho da requisicao sai como o do Edge', () => {
+  assert.equal(acceptLanguage('pt-BR,pt,en'), 'pt-BR,pt;q=0.9,en;q=0.8');
+  assert.equal(acceptLanguage('en-US, en'), 'en-US,en;q=0.9');
+  assert.equal(acceptLanguage('pt-BR'), 'pt-BR');
+  assert.equal(acceptLanguage(Array.from({ length: 12 }, (_, i) => `l${i}`).join(',')).endsWith('l10;q=0.1,l11;q=0.1'), true);
+});
+
+test('idioma: o perfil do Edge fica com o idioma pedido, sem perder o resto das preferencias', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msr-perfil-'));
+  const file = path.join(dir, 'Default', 'Preferences');
+  const intl = () => JSON.parse(fs.readFileSync(file, 'utf8')).intl;
+  const wanted = { accept_languages: 'pt-BR,pt,en', selected_languages: 'pt-BR,pt,en' };
+
+  assert.equal(setProfileLanguages('pt-BR,pt,en', dir), true); // perfil novo: cria o arquivo
+  assert.deepEqual(intl(), wanted);
+  assert.equal(setProfileLanguages('pt-BR,pt,en', dir), false); // ja esta certo: nao regrava
+
+  // Perfil criado num Windows em ingles: troca o idioma e mantem todo o resto.
+  fs.writeFileSync(file, JSON.stringify({ intl: { selected_languages: 'en-US,en', outro: 1 }, profile: { name: 'bot' } }));
+  assert.equal(setProfileLanguages('pt-BR,pt,en', dir), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { intl: { outro: 1, ...wanted }, profile: { name: 'bot' } });
+
+  fs.writeFileSync(file, '{ cortado'); // ilegivel: nao toca
+  assert.equal(setProfileLanguages('pt-BR,pt,en', dir), false);
+  assert.equal(fs.readFileSync(file, 'utf8'), '{ cortado');
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('agendamento: o exe chama a si mesmo; no checkout, node + script', () => {

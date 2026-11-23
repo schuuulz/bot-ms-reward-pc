@@ -50,8 +50,18 @@ async function saveSession(session) {
 /** Copia os cookies do navegador aberto para data/session.json. */
 export async function exportSession(context, page) {
   const cookies = await context.cookies(ORIGINS);
-  const userAgent = await page.evaluate(() => navigator.userAgent);
-  await saveSession({ savedAt: new Date().toISOString(), userAgent, cookies });
+  const { userAgent, languages } = await page.evaluate(() => ({ userAgent: navigator.userAgent, languages: navigator.languages.join(',') }));
+  await saveSession({ savedAt: new Date().toISOString(), userAgent, languages, cookies });
+}
+
+/** Cabecalho Accept-Language como o Edge monta a partir da lista: "pt-BR,pt;q=0.9,en;q=0.8". */
+export function acceptLanguage(languages) {
+  return String(languages)
+    .split(',')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((lang, i) => (i ? `${lang};q=${Math.max(1 - i / 10, 0.1).toFixed(1)}` : lang))
+    .join(',');
 }
 
 export function cookieHeader(session, url) {
@@ -104,7 +114,9 @@ async function get(session, startUrl) {
       headers: {
         'User-Agent': session.userAgent,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+        // O mesmo idioma do navegador do bot: o site lista cards diferentes por idioma, e um card
+        // que so aparece aqui ficaria "pendente" para sempre, sem o navegador conseguir clicar.
+        'Accept-Language': acceptLanguage(session.languages || config.languages),
         'sec-ch-ua': `"Not-A.Brand";v="99", "Microsoft Edge";v="${major}", "Chromium";v="${major}"`,
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',

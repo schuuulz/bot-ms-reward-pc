@@ -91,5 +91,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "v$VERSION" dist/msr.zip dist/msr.exe.gz dist/SHA256SUMS.txt \
+          gh release create "v$VERSION" dist/release/* \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "msr v$VERSION" --generate-notes

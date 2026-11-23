@@ -98,7 +98,12 @@ export async function run({ parts = ['cards', 'searches'], paced, count, claim, 
       result.before ??= await readState(page);
       todo ??= plan(result.before, options);
 
-      if (todo.cards) result.cards = await runActivities({ context, page, log });
+      if (todo.cards) {
+        result.cards = await runActivities({ context, page, log });
+        // O estado dizia que havia card a fazer e a pagina nao mostrou nenhum: sem este aviso o
+        // bot abriria o navegador a toa em toda execucao, sem ninguem ficar sabendo.
+        if (!result.cards) result.issues.push('o site lista card pendente que a pagina aberta pelo bot nao mostra');
+      }
       if (todo.searches) {
         if (paced) log(`ritmo do dia: ${todo.limit} busca(s) nesta sessao`);
         const s = await runSearches({ context, page, history: new History(), log, limit: todo.limit, force: todo.force });

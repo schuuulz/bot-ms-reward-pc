@@ -6,6 +6,8 @@ verdade com um perfil só do bot. Roda no Windows 10/11.
 - **Cards**: conjunto diário e "Continuar ganhando", incluindo quizzes e os cards do Image Creator.
 - **Buscas no Bing**: lê o contador do dia (ex.: 39/60) e faz só as que faltam, espalhadas ao longo do dia.
 - **Reivindicar pontos**: os bônus do site ficam "pendentes" e expiram; `msr claim` reivindica.
+  Com o **auto claim** ligado (entrada "Auto claim" no menu), toda execução completa, inclusive as
+  agendadas, reivindica no fim. Vem desligado.
 
 > Automatizar o Rewards é contra os termos de uso da Microsoft. O bot tenta se comportar como uma
 > pessoa, mas o risco de restrição ou banimento da conta existe e é seu.
@@ -35,12 +37,12 @@ apague o exe e essa pasta.
 
 ### Atualizar
 
-O menu mostra a versão em uso (`msr v2.1.2`). Toda vez que é aberto, o msr consulta a última
+O menu mostra a versão em uso (`msr v2.1.3`). Toda vez que é aberto, o msr consulta a última
 versão publicada no GitHub. Havendo versão nova, aparece o aviso e a opção **Quero Atualizar** no
 menu. Nada é atualizado sem você escolher, e as execuções agendadas não consultam nada.
 
-Ao atualizar, o msr baixa o binário da release, confere o SHA-256 com o que o GitHub informa para
-o arquivo, testa o exe novo e só então troca o atual. Login, dados e agendamento continuam como
+Ao atualizar, o msr baixa o `msr.zip` da release, confere o SHA-256 com o que o GitHub informa
+para o arquivo, tira o exe de dentro, testa o exe novo e só então troca o atual. Login, dados e agendamento continuam como
 estavam. Pela linha de comando: `msr update` (ou `msr update --check` para só conferir).
 
 ## Uso
@@ -154,8 +156,8 @@ Requer Node 26+ e Microsoft Edge. A única dependência é `playwright-core` (n�
 npm install
 npm link            # instala o comando global `msr`, rodando direto do código
 npm test
-npm run build:exe   # gera dist/msr.exe (~109 MB)
-npm run package     # dist/msr.zip, dist/msr.exe.gz e dist/SHA256SUMS.txt
+npm run build:exe   # gera dist/msr.exe (~109 MB), com o ícone de bot-msr-icon.png
+npm run package     # dist/release/msr.zip, o único arquivo de cada release
 ```
 
 No checkout, login e dados ficam na pasta do projeto (`.edge-profile/` e `data/`, fora do git); a
@@ -175,6 +177,9 @@ Ajustes pessoais vão em `data/config.json` e sobrepõem os padrões de `src/con
 { "autoClaim": true, "pacing": { "startHour": 9, "finishHour": 22 } }
 ```
 
+`languages` (padrão `"pt-BR,pt,en"`) é o idioma do Edge do bot e da leitura por requisição. O
+Rewards lista cards diferentes conforme o idioma, por isso os dois usam sempre o mesmo.
+
 ```
 bin/msr.js        entrada do comando
 src/cli.js        argumentos, ajuda, códigos de saída      src/commands.js   comandos e menus
@@ -187,7 +192,7 @@ src/browser.js    Edge + CDP                                src/profile.js    ta
 src/stats.js      histórico diário                          src/notify.js     notificação do Windows
 src/logs.js       logs em SQLite                            src/ui.js         cores, tabela, painel
 src/update.js     versão e atualização pelas releases       src/win.js        PowerShell e DPAPI
-scripts/          build-exe.js, package-release.js e sea-main.cjs (o que roda ao abrir o exe)
+scripts/          build-exe.js, exe-icon.js, package-release.js e sea-main.cjs (o que roda ao abrir o exe)
 test/             node:test
 ```
 

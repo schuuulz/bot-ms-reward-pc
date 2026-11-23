@@ -321,13 +321,27 @@ async function queries(_args, _opts, log) {
   }
 }
 
+/**
+ * Liga ou desliga o auto claim (config.autoClaim, gravado em data/config.json): com ele ligado,
+ * toda execucao completa, inclusive as agendadas, reivindica os pontos pendentes no fim.
+ */
+function toggleAutoClaim() {
+  saveConfig({ autoClaim: !config.autoClaim });
+  console.log(ok(config.autoClaim
+    ? 'auto claim ligado: os pontos pendentes serão reivindicados no fim de cada execução completa, inclusive as agendadas'
+    : 'auto claim desligado: os pontos pendentes só são reivindicados quando você escolher "Reivindicar pontos"'));
+  return false; // volta direto ao menu, que ja mostra o novo estado
+}
+
 async function menu(_args, opts, log) {
+  // O texto de uma entrada pode ser uma funcao, para refletir um estado que muda com o menu aberto.
   const entries = [
     ['Rodar tudo que falta', () => execute({}, opts, log)],
     ['Rodar só a fatia deste horário', () => execute({ paced: true }, opts, log)],
     ['Só buscas', () => execute({ parts: ['searches'] }, opts, log)],
     ['Só cards', () => execute({ parts: ['cards'] }, opts, log)],
     ['Reivindicar pontos', () => execute({ parts: [], claim: true }, opts, log)],
+    [() => `Auto claim: ${config.autoClaim ? 'ligado' : 'desligado'} (Enter para ${config.autoClaim ? 'desligar' : 'ligar'})`, toggleAutoClaim],
     ['Histórico de pontos', () => stats([], opts)],
     ['Agendamento', () => scheduleMenu(opts)],
     ['Logs', () => logsMenu()],
@@ -353,7 +367,7 @@ async function menu(_args, opts, log) {
     console.log('');
     console.log(state ? renderState(state, pendingCards(state.cards), setAsideCards(state.cards)) : `  ${paint('dim', 'conta não detectada; veja "Verificar conta"')}`);
     console.log('');
-    const choice = await select(entries.map(([label]) => label));
+    const choice = await select(entries.map(([label]) => (typeof label === 'function' ? label() : label)));
     const action = entries[choice]?.[1];
     if (!action) return;
     console.log('');

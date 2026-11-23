@@ -4,6 +4,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { config } from './config.js';
 import { sleep } from './human.js';
+import { setProfileLanguages } from './profile.js';
 import { powershell } from './win.js';
 
 const endpoint = () => `http://127.0.0.1:${config.port}`;
@@ -73,6 +74,7 @@ export async function openBrowser({ headless = config.headless } = {}) {
     const exe = findEdge();
     if (!exe) throw new Error('msedge.exe nao encontrado; ajuste edgePaths em data/config.json');
     fs.mkdirSync(config.profileDir, { recursive: true });
+    setProfileLanguages(config.languages); // o Edge esta fechado: e a hora de acertar o idioma
     spawn(
       exe,
       [

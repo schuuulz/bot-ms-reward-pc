@@ -74,6 +74,28 @@ export function profileInfo() {
 }
 
 /**
+ * Deixa o perfil com os idiomas `languages` ("pt-BR,pt,en"). Um perfil novo herda o idioma de
+ * exibicao do Windows, que pode nao ser o da conta: ai o Rewards mostra outro conjunto de cards.
+ * O Edge precisa estar fechado (ele regrava o Preferences ao sair). Retorna true se alterou.
+ */
+export function setProfileLanguages(languages, dir = config.profileDir) {
+  const file = path.join(dir, 'Default', 'Preferences');
+  let prefs = {};
+  try {
+    prefs = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') return false; // ilegivel: melhor nao mexer do que perder o login
+  }
+  if (!prefs || typeof prefs !== 'object' || Array.isArray(prefs)) return false;
+  const intl = prefs.intl && typeof prefs.intl === 'object' ? prefs.intl : {};
+  if (intl.accept_languages === languages && intl.selected_languages === languages) return false;
+  prefs.intl = { ...intl, accept_languages: languages, selected_languages: languages };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(prefs));
+  return true;
+}
+
+/**
  * Apaga tudo que nao e necessario para o login. O Edge do bot precisa estar fechado.
  * Retorna quantos bytes foram liberados.
  */

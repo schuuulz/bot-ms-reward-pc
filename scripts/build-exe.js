@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pngToIco, setExeIcon } from './exe-icon.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const dist = path.join(root, 'dist');
@@ -39,18 +40,32 @@ const buildIdFile = path.join(dist, 'build-id.txt');
 const configFile = path.join(dist, 'sea-config.json');
 const output = path.join(dist, 'msr.exe');
 fs.writeFileSync(buildIdFile, buildId);
-fs.writeFileSync(
-  configFile,
-  JSON.stringify({
-    main: path.join(root, 'scripts', 'sea-main.cjs'),
-    output,
-    disableExperimentalSEAWarning: true,
-    execArgvExtension: 'none', // NODE_OPTIONS da maquina nao afeta o exe
-    assets: { 'build-id': buildIdFile, ...Object.fromEntries(files.map((file) => [`app/${file}`, path.join(root, file)])) },
-  }),
-);
 
-execFileSync(process.execPath, ['--build-sea', configFile], { cwd: root, stdio: 'inherit' });
+// O exe e uma copia do node.exe com o app dentro. O icone (bot-msr-icon.png) entra nessa copia
+// antes de o app ser embutido: depois, mexer nos recursos seria reescrever o app junto.
+const base = path.join(dist, 'node-base.exe');
+const icon = path.join(dist, 'msr.ico');
+try {
+  await pngToIco(path.join(root, 'bot-msr-icon.png'), icon);
+  fs.copyFileSync(process.execPath, base);
+  await setExeIcon(base, icon);
+
+  fs.writeFileSync(
+    configFile,
+    JSON.stringify({
+      main: path.join(root, 'scripts', 'sea-main.cjs'),
+      executable: base,
+      output,
+      disableExperimentalSEAWarning: true,
+      execArgvExtension: 'none', // NODE_OPTIONS da maquina nao afeta o exe
+      assets: { 'build-id': buildIdFile, ...Object.fromEntries(files.map((file) => [`app/${file}`, path.join(root, file)])) },
+    }),
+  );
+  execFileSync(process.execPath, ['--build-sea', configFile], { cwd: root, stdio: 'inherit' });
+} finally {
+  fs.rmSync(base, { force: true });
+  fs.rmSync(icon, { force: true });
+}
 
 const mb = (fs.statSync(output).size / 1048576).toFixed(1);
 console.log(`\n${output}\n  build ${buildId} · ${files.length} arquivos · ${mb} MB · Node ${process.version}`);

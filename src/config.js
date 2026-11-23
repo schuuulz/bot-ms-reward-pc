@@ -21,6 +21,10 @@ const defaults = {
   // Tela que o Edge headless declara aos sites (resolucao e altura da barra de tarefas).
   headlessScreen: '1920x1080 workAreaBottom=48',
 
+  // Idiomas do Edge do bot, em ordem de preferencia. O Rewards entrega cards diferentes conforme
+  // o idioma, entao o navegador e a leitura por requisicao precisam usar o mesmo (ver http.js).
+  languages: 'pt-BR,pt,en',
+
   // true: le o estado (saldo, contador, cards) por requisicao HTTP com os cookies salvos em
   // data/session.json, e so abre o navegador se houver algo a fazer. false: sempre pelo navegador.
   httpStatus: true,
